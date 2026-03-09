@@ -55,9 +55,6 @@ class TelegramForwarder:
         env_remove_sig = _env_bool('REMOVE_FORWARD_SIGNATURE')
         self.remove_forward_signature = remove_forward_signature if remove_forward_signature is not None else env_remove_sig
 
-        # Mirror mode settings
-        self.mirror_enabled = _env_bool('MIRROR')
-        self.auto_create_topics = _env_bool('AUTO_CREATE_TOPICS')
 
         # Sync settings
         self.sync_enabled = _env_bool('SYNC_MISSED_MESSAGES')
@@ -72,23 +69,18 @@ class TelegramForwarder:
         # Parse forwarding configuration
         # forwarding_map: {(source_chat_id, source_topic_id|None): [(target_chat_id, target_topic_id|None), ...]}
         self.forwarding_map = {}
-        # mirror_map: {source_chat_id: [target_chat_id, ...]}
-        self.mirror_map = {}
+
         self._parse_all_rules()
 
-        if not self.forwarding_map and not self.mirror_map:
+        if not self.forwarding_map:
             raise ValueError(
                 "No forwarding rules configured. "
-                "Set SOURCE_N/TARGET_N, FORWARDING_RULES, MIRROR_N, or SOURCE_ID/TARGET_ID."
+                "Set SOURCE_N/TARGET_N, FORWARDING_RULES, or SOURCE_ID/TARGET_ID."
             )
 
         # Extract unique source chat IDs for event registration
         source_from_rules = {src_chat for src_chat, _ in self.forwarding_map.keys()}
-        source_from_mirror = set(self.mirror_map.keys())
-        self.source_chat_ids = list(source_from_rules | source_from_mirror)
-
-        # Topic cache for mirror mode: {(chat_id, topic_name): topic_id}
-        self._topic_cache = {}
+        self.source_chat_ids = list(source_from_rules)
 
         # Ensure session directory exists
         os.makedirs('sessions', exist_ok=True)
@@ -120,8 +112,7 @@ class TelegramForwarder:
         """Parse all forwarding configurations in priority order."""
         # 1. SOURCE_N / TARGET_N numbered pairs (highest priority)
         self._parse_numbered_pairs()
-        # 2. MIRROR_N rules
-        self._parse_mirror_rules()
+
         # 3. FORWARDING_RULES compact format
         self._parse_forwarding_rules_compact()
         # 4. Legacy SOURCE_ID / TARGET_ID
@@ -151,32 +142,6 @@ class TelegramForwarder:
                 raise ValueError(f"SOURCE_{n} and TARGET_{n} must both be set (found only one).")
             n += 1
 
-    def _parse_mirror_rules(self):
-        """Parse MIRROR_N environment variables."""
-        if not self.mirror_enabled:
-            return
-        n = 1
-        while True:
-            mirror_env = os.getenv(f'MIRROR_{n}')
-            if mirror_env is None:
-                break
-            try:
-                # Format: source_id:target_id1,target_id2
-                parts = mirror_env.strip().split(':')
-                if len(parts) < 2:
-                    raise ValueError(f"Invalid MIRROR_{n} format: {mirror_env}")
-                source_id = int(parts[0].strip())
-                # Targets after the colon, comma-separated
-                target_str = ':'.join(parts[1:])  # rejoin in case there's no comma
-                target_ids = [int(t.strip()) for t in target_str.split(',')]
-                if source_id in self.mirror_map:
-                    self.mirror_map[source_id].extend(target_ids)
-                else:
-                    self.mirror_map[source_id] = target_ids
-                logger.info(f"Parsed MIRROR_{n}: {source_id} -> {target_ids}")
-            except ValueError as e:
-                raise ValueError(f"Error parsing MIRROR_{n}: {e}")
-            n += 1
 
     def _parse_forwarding_rules_compact(self):
         """Parse FORWARDING_RULES compact format."""
@@ -209,7 +174,7 @@ class TelegramForwarder:
         if not source_id or not target_id:
             return
         # Only use legacy if no other rules were found
-        if self.forwarding_map or self.mirror_map:
+        if self.forwarding_map:
             return
         try:
             source_key = (int(source_id), None)
@@ -325,90 +290,6 @@ class TelegramForwarder:
             return reply_to.reply_to_top_id or reply_to.reply_to_msg_id
         return None
 
-    async def _get_topic_name(self, chat_id, topic_id):
-        """Get the name of a topic by its ID in a forum group."""
-        try:
-            result = await self.client(GetForumTopicsRequest(
-                peer=chat_id,
-                offset_date=None,
-                offset_id=0,
-                offset_topic=0,
-                limit=100
-            ))
-            for topic in result.topics:
-                if topic.id == topic_id:
-                    return topic.title
-        except Exception as e:
-            logger.error(f"Error fetching topics for {chat_id}: {e}")
-        return None
-
-    async def _find_topic_by_name(self, chat_id, topic_name):
-        """Find a topic ID by name in a forum group. Returns topic_id or None."""
-        cache_key = (chat_id, topic_name)
-        if cache_key in self._topic_cache:
-            return self._topic_cache[cache_key]
-        try:
-            result = await self.client(GetForumTopicsRequest(
-                peer=chat_id,
-                offset_date=None,
-                offset_id=0,
-                offset_topic=0,
-                limit=100
-            ))
-            for topic in result.topics:
-                self._topic_cache[(chat_id, topic.title)] = topic.id
-                if topic.title == topic_name:
-                    return topic.id
-        except Exception as e:
-            logger.error(f"Error searching topics in {chat_id}: {e}")
-        return None
-
-    async def _create_topic(self, chat_id, title):
-        """Create a new forum topic in a group. Returns the new topic ID."""
-        try:
-            result = await self.client(CreateForumTopicRequest(
-                peer=chat_id,
-                title=title,
-                random_id=int.from_bytes(os.urandom(8), 'big')
-            ))
-            # The topic ID is the message ID of the topic creation action
-            for update in result.updates:
-                if hasattr(update, 'message') and hasattr(update.message, 'id'):
-                    topic_id = update.message.id
-                    self._topic_cache[(chat_id, title)] = topic_id
-                    logger.info(f"Created topic '{title}' (ID: {topic_id}) in chat {chat_id}")
-                    return topic_id
-            logger.error(f"Could not determine topic ID after creating '{title}' in {chat_id}")
-        except Exception as e:
-            logger.error(f"Error creating topic '{title}' in {chat_id}: {e}")
-        return None
-
-    async def _get_or_create_topic(self, source_chat_id, source_topic_id, target_chat_id):
-        """For mirror mode: find or create the matching topic in the target group.
-        
-        Returns the target topic ID, or None if it can't be resolved.
-        """
-        if source_topic_id is None:
-            return None  # General topic, no specific topic needed
-
-        # Get the source topic name
-        topic_name = await self._get_topic_name(source_chat_id, source_topic_id)
-        if not topic_name:
-            logger.warning(f"Could not find topic name for ID {source_topic_id} in source {source_chat_id}")
-            return source_topic_id  # Fallback: try using the same numeric ID
-
-        # Check if a topic with the same name exists in target
-        target_topic_id = await self._find_topic_by_name(target_chat_id, topic_name)
-        if target_topic_id:
-            return target_topic_id
-
-        # Auto-create if enabled
-        if self.auto_create_topics:
-            logger.info(f"Topic '{topic_name}' not found in {target_chat_id}, creating...")
-            return await self._create_topic(target_chat_id, topic_name)
-
-        logger.warning(f"Topic '{topic_name}' not found in target {target_chat_id} and AUTO_CREATE_TOPICS is disabled")
-        return None
 
     # ─── Forwarding logic ──────────────────────────────────────
 
@@ -451,19 +332,6 @@ class TelegramForwarder:
         """Process a single message: route it to targets and handle mirror mode."""
         msg_topic_id = self._get_message_topic_id(message)
 
-        # ── Mirror mode ──
-        if source_chat_id in self.mirror_map:
-            source_info = await self.get_entity_info(source_chat_id, msg_topic_id)
-            logger.info(f"[Mirror] Processing message {message.id} from {sender_id} in {source_info}")
-
-            for target_chat_id in self.mirror_map[source_chat_id]:
-                try:
-                    target_topic = await self._get_or_create_topic(source_chat_id, msg_topic_id, target_chat_id)
-                    await self._send_to_target(message, source_chat_id, target_chat_id, target_topic)
-                except Exception as e:
-                    target_info = await self.get_entity_info(target_chat_id)
-                    logger.error(f"[Mirror] Error forwarding to {target_info}: {e}")
-
         # ── Rule-based forwarding ──
         targets = self._find_targets(source_chat_id, msg_topic_id)
         if targets:
@@ -482,11 +350,6 @@ class TelegramForwarder:
         if not self.sync_enabled:
             return
             
-        if self.bot_token:
-            logger.warning("Catch-up sync is skipped: Telegram API restricts bots from fetching full chat history.")
-            logger.warning("To use the Catch-up Sync feature, please run in User Mode (leave BOT_TOKEN empty in .env).")
-            return
-            
         logger.info("Starting catch-up sync for missed messages...")
         
         for source_chat_id in self.source_chat_ids:
@@ -495,15 +358,11 @@ class TelegramForwarder:
                 last_id = self.sync_state.get(source_chat_id)
                 
                 if not last_id:
-                    # First run: we don't have a last_id. Fetch the latest message so we
-                    # have a starting point and don't forward the entire chat history.
-                    logger.info(f"First run for {source_info}: establishing base message ID.")
-                    # Get the most recent message
-                    async for msg in self.client.iter_messages(source_chat_id, limit=1):
-                        self._update_last_id(source_chat_id, msg.id)
-                    continue
+                    # First run: start from message ID 0 to pull ALL historical messages.
+                    logger.info(f"First run for {source_info}: establishing base message ID 0 to sync all history.")
+                    last_id = 0
                 
-                # We have a last_id. Fetch newer messages in chronological order (reverse=True)
+                # Fetch newer messages in chronological order (reverse=True)
                 logger.info(f"Catching up {source_info} starting from msg ID {last_id}")
                 count = 0
                 async for msg in self.client.iter_messages(source_chat_id, min_id=last_id, reverse=True):
@@ -547,13 +406,6 @@ class TelegramForwarder:
                     target_infos.append(target_info)
                 logger.info(f"  {source_info} -> {', '.join(target_infos)}")
 
-        # Log mirror rules
-        if self.mirror_map:
-            logger.info("Mirror rules (auto-topic matching):")
-            for source_id, target_ids in self.mirror_map.items():
-                source_info = await self.get_entity_info(source_id)
-                target_infos = [await self.get_entity_info(t) for t in target_ids]
-                logger.info(f"  {source_info} ↔ {', '.join(target_infos)}")
 
         @self.client.on(events.NewMessage(chats=self.source_chat_ids))
         async def forward_handler(event):

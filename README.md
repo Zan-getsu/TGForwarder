@@ -92,8 +92,7 @@ docker run -d \
 | `REMOVE_FORWARD_SIGNATURE` | ❌ | `true` = send clean copies without "Forwarded from..." header |
 | `DISABLE_CONSOLE_LOG` | ❌ | `true` = log only to file, no console output |
 | `SYNC_MISSED_MESSAGES` | ❌ | `true` = catch up on messages missed while bot was offline |
-| `MIRROR` | ❌ | `true` = enable mirror mode |
-| `AUTO_CREATE_TOPICS` | ❌ | `true` = auto-create missing topics in destination groups |
+
 
 > CLI flags `-r` and `-q` still work and override the env vars.
 
@@ -140,35 +139,7 @@ TARGET_ID=-1002222222222
 
 ---
 
-## 🪞 Mirror Mode
 
-Mirror mode automatically forwards messages to the **same topic** in the destination group. Perfect for **group backups**.
-
-```env
-MIRROR=true
-AUTO_CREATE_TOPICS=true
-
-# Mirror all topics from source → backup group
-MIRROR_1=-1001111111111:-1002222222222
-
-# Mirror to multiple backup groups
-MIRROR_2=-1003333333333:-1004444444444,-1005555555555
-```
-
-### How it works
-
-1. Message arrives in source group, Topic "Gaming" (ID: 5)
-2. Bot looks for a topic named "Gaming" in the destination group
-3. If found → forwards to that topic
-4. If not found and `AUTO_CREATE_TOPICS=true` → creates the topic automatically, then forwards
-
-### Requirements
-
-- `MIRROR=true` must be set
-- The bot/user must be **admin with "Manage Topics"** permission in destination groups (for auto-create)
-- Topic matching is done **by name**, not by numeric ID
-
----
 
 ## 🔄 Catch-up Sync (Missed Messages)
 
@@ -179,7 +150,7 @@ To catch up on messages you missed while offline:
 2. The bot will save the ID of the last forwarded message to `sessions/sync_state.json`
 3. On startup, it will fetch all messages newer than that ID and forward them chronologically *before* it begins listening live.
 
-*Note: On its very first run, it will just establish a baseline so it doesn't accidentally forward the entire chat history.*
+*Note: On its very first run, it will sync the entire history of the chat from the very beginning. Be aware that this may take time for large groups.*
 
 ---
 
@@ -227,9 +198,9 @@ To catch up on messages you missed while offline:
 | Problem | Solution |
 |---------|----------|
 | `Missing API_ID or API_HASH` | Check `.env` file |
-| `No forwarding rules configured` | Set `SOURCE_N`/`TARGET_N`, `MIRROR_N`, or `FORWARDING_RULES` |
+| `No forwarding rules configured` | Set `SOURCE_N`/`TARGET_N` or `FORWARDING_RULES` |
 | `Error getting entity info` | Account/bot doesn't have access to that chat |
-| `Error creating topic` | Bot needs admin + "Manage Topics" permission |
+
 | Rate limited | Script handles automatically; reduce volume if frequent |
 | Messages not in topic | Verify topic ID (copy message link to check) |
 
@@ -240,7 +211,7 @@ To catch up on messages you missed while offline:
 - **Rate limits** handled automatically
 - **Session files** in `sessions/` — don't delete unless you want to re-login
 - **Topic forwarding caveat:** Messages sent to a specific topic use `send_message` (not `forward_messages`), so the "Forwarded from..." header won't appear
-- **Mirror topic matching** is by **name**, not numeric ID — rename topics carefully
+
 
 ---
 
