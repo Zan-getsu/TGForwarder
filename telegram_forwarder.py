@@ -8,7 +8,6 @@ from dotenv import load_dotenv
 from telethon import TelegramClient, events
 from telethon.errors import SessionPasswordNeededError, FloodWaitError
 from telethon.tl.types import PeerUser, PeerChat, PeerChannel
-from telethon.tl.functions.messages import GetForumTopicsRequest, CreateForumTopicRequest
 
 # Load environment variables
 load_dotenv()
