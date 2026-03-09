@@ -321,6 +321,17 @@ class TelegramForwarder:
                     phone = input("Enter your phone number (for user client): ")
                     await self.user_client.send_code_request(phone)
                     code = input("Enter the code you received: ")
+        # Start the user client if in dual mode
+        if self.user_client:
+            if self.session_string:
+                # StringSession was already passed to TelegramClient constructor
+                await self.user_client.start()
+            else:
+                await self.user_client.start()
+                if not await self.user_client.is_user_authorized():
+                    phone = input("Enter your phone number (for user client): ")
+                    await self.user_client.send_code_request(phone)
+                    code = input("Enter the code you received: ")
                     try:
                         await self.user_client.sign_in(phone, code)
                     except SessionPasswordNeededError:
@@ -328,18 +339,19 @@ class TelegramForwarder:
                         await self.user_client.sign_in(password=password)
             logger.info("User client started successfully (for catch-up sync)")
 
-        # Pre-warm entity cache to prevent "Could not find the input entity" errors
-        logger.info("Pre-warming entity cache (fetching recent dialogs)...")
-        try:
-            await self.client.get_dialogs(limit=100)
-        except Exception as e:
-            logger.warning(f"Error pre-warming main client cache: {e}")
-
-        if self.user_client:
+            # Pre-warm entity cache for user client (bots cannot call get_dialogs)
+            logger.info("Pre-warming user entity cache (fetching recent dialogs)...")
             try:
                 await self.user_client.get_dialogs(limit=100)
             except Exception as e:
                 logger.warning(f"Error pre-warming user client cache: {e}")
+        elif not self.bot_token:
+            # If strictly in user mode, perform cache pre-warming
+            logger.info("Pre-warming main client entity cache...")
+            try:
+                await self.client.get_dialogs(limit=100)
+            except Exception as e:
+                logger.warning(f"Error pre-warming main client cache: {e}")
 
     async def get_entity_info(self, entity_id, topic_id=None):
         """Get information about an entity (user, chat, or channel), optionally with topic."""
@@ -385,9 +397,30 @@ class TelegramForwarder:
         # Fall back to wildcard (no topic filter)
         return self.forwarding_map.get((source_chat_id, None), [])
 
+    async def _resolve_entity(self, entity_id):
+        """
+        Attempts to resolve an entity ID into a full InputPeer object.
+        Bots often lack the cached mapping for raw integer IDs. In Dual Mode, 
+        we can use the user_client (which has a warm cache from get_dialogs) to fetch it.
+        """
+        if self.user_client:
+            try:
+                entity = await self.user_client.get_entity(entity_id)
+                from telethon.tl.types import InputPeerChannel, InputPeerChat, InputPeerUser
+                from telethon.utils import get_input_peer
+                return get_input_peer(entity)
+            except Exception as e:
+                logger.debug(f"User client failed to resolve entity {entity_id}: {e}")
+        
+        # Fallback to pure integer ID
+        return entity_id
+
     async def _send_to_target(self, message, source_chat_id, target_chat, target_topic):
         """Send or forward a message to a specific target chat/topic."""
         target_info = await self.get_entity_info(target_chat, target_topic)
+        
+        # Try to resolve the entity explicitly, especially helpful for bot clients
+        resolved_target = await self._resolve_entity(target_chat)
 
         if self.remove_forward_signature or target_topic is not None:
             # Build reply_to for forum topic targeting
@@ -395,7 +428,7 @@ class TelegramForwarder:
 
             # Send as new message (required for topic placement or clean copy)
             await self.client.send_message(
-                entity=target_chat,
+                entity=resolved_target,
                 message=message.message,
                 file=message.media,
                 formatting_entities=message.entities,
@@ -409,7 +442,7 @@ class TelegramForwarder:
         else:
             # Forward with "Forward from..." signature
             await self.client.forward_messages(
-                entity=target_chat,
+                entity=resolved_target,
                 messages=message.id,
                 from_peer=source_chat_id
             )
