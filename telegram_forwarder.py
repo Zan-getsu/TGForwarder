@@ -1,16 +1,16 @@
 import asyncio
 import logging
 import os
-import re
 import json
 import argparse
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 from telethon.errors import SessionPasswordNeededError, FloodWaitError
-from telethon.tl.types import PeerUser, PeerChat, PeerChannel
 
 # Load environment variables
 load_dotenv()
+
 
 def setup_logging(disable_console=False):
     """Configure logging based on console preference."""
@@ -30,6 +30,7 @@ def setup_logging(disable_console=False):
             ]
         )
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,11 +41,12 @@ def _env_bool(key, default=False):
         return True
     if val in ('false', '0', 'no', ''):
         return default
+    logger.warning(f"Unrecognized value '{os.getenv(key)}' for {key}. Using default={default}.")
     return default
 
 
 class TelegramForwarder:
-    def __init__(self, remove_forward_signature=None, disable_console_log=None):
+    def __init__(self, remove_forward_signature=None):
         """Initialize the Telegram forwarder with environment variables."""
         self.api_id = os.getenv('API_ID')
         self.api_hash = os.getenv('API_HASH')
@@ -54,7 +56,6 @@ class TelegramForwarder:
         # Options: env vars as defaults, CLI args override
         env_remove_sig = _env_bool('REMOVE_FORWARD_SIGNATURE')
         self.remove_forward_signature = remove_forward_signature if remove_forward_signature is not None else env_remove_sig
-
 
         # Sync settings
         self.sync_enabled = _env_bool('SYNC_MISSED_MESSAGES')
@@ -94,7 +95,9 @@ class TelegramForwarder:
             self.client = TelegramClient('sessions/bot_session', self.api_id, self.api_hash)
             logger.info("Initialized in bot mode")
         elif self.session_string:
-            self.client = TelegramClient('sessions/user_session', self.api_id, self.api_hash)
+            self.client = TelegramClient(
+                StringSession(self.session_string), self.api_id, self.api_hash
+            )
             logger.info("Initialized in user mode (session string)")
         else:
             self.client = TelegramClient('sessions/user_session', self.api_id, self.api_hash)
@@ -115,10 +118,9 @@ class TelegramForwarder:
         """Parse all forwarding configurations in priority order."""
         # 1. SOURCE_N / TARGET_N numbered pairs (highest priority)
         self._parse_numbered_pairs()
-
-        # 3. FORWARDING_RULES compact format
+        # 2. FORWARDING_RULES compact format
         self._parse_forwarding_rules_compact()
-        # 4. Legacy SOURCE_ID / TARGET_ID
+        # 3. Legacy SOURCE_ID / TARGET_ID
         self._parse_legacy_single()
 
     def _parse_numbered_pairs(self):
@@ -144,7 +146,6 @@ class TelegramForwarder:
             elif source_env or target_env:
                 raise ValueError(f"SOURCE_{n} and TARGET_{n} must both be set (found only one).")
             n += 1
-
 
     def _parse_forwarding_rules_compact(self):
         """Parse FORWARDING_RULES compact format."""
@@ -223,15 +224,15 @@ class TelegramForwarder:
             return
             
         try:
-            # Convert tuple keys to strings: chat_id -> "chat_id"
+            # Convert keys to strings: chat_id -> "chat_id"
             raw_state = {str(chat_id): last_id for chat_id, last_id in self.sync_state.items()}
             with open(self.state_file, 'w') as f:
                 json.dump(raw_state, f, indent=2)
         except Exception as e:
             logger.error(f"Error saving sync state: {e}")
 
-    def _update_last_id(self, source_chat_id, message_id):
-        """Update the last forwarded message ID and save state."""
+    def _update_last_id(self, source_chat_id, message_id, save=True):
+        """Update the last forwarded message ID and optionally save state."""
         if not self.sync_enabled:
             return
         
@@ -240,7 +241,8 @@ class TelegramForwarder:
         # Only update if the new message is newer
         if message_id > current_last:
             self.sync_state[source_chat_id] = message_id
-            self._save_state()
+            if save:
+                self._save_state()
 
     # ─── Client & entity helpers ───────────────────────────────
 
@@ -249,7 +251,8 @@ class TelegramForwarder:
         if self.bot_token:
             await self.client.start(bot_token=self.bot_token)
         elif self.session_string:
-            await self.client.start(session_string=self.session_string)
+            # StringSession was already passed to TelegramClient constructor
+            await self.client.start()
         else:
             await self.client.start()
             if not await self.client.is_user_authorized():
@@ -285,7 +288,7 @@ class TelegramForwarder:
             suffix = f" [Topic: {topic_id}]" if topic_id is not None else ""
             return f"Unknown Entity (ID: {entity_id}){suffix}"
 
-    # ─── Topic helpers (for mirror mode) ───────────────────────
+    # ─── Topic helpers ─────────────────────────────────────────
 
     def _get_message_topic_id(self, message):
         """Extract the forum topic ID from a message, or None if not in a topic."""
@@ -312,14 +315,17 @@ class TelegramForwarder:
         """Send or forward a message to a specific target chat/topic."""
         target_info = await self.get_entity_info(target_chat, target_topic)
 
-        if self.remove_forward_signature or target_topic:
-            # Send as new message (required for topic placement)
+        if self.remove_forward_signature or target_topic is not None:
+            # Build reply_to for forum topic targeting
+            reply_to = target_topic if target_topic is not None else None
+
+            # Send as new message (required for topic placement or clean copy)
             await self.client.send_message(
                 entity=target_chat,
                 message=message.message,
                 file=message.media,
-                parse_mode='html' if message.entities else None,
-                reply_to=target_topic
+                formatting_entities=message.entities,
+                reply_to=reply_to
             )
             if self.remove_forward_signature:
                 logger.info(f"Sent message (no signature) to {target_info}")
@@ -335,7 +341,7 @@ class TelegramForwarder:
             logger.info(f"Forwarded message to {target_info}")
 
     async def _process_message(self, message, source_chat_id, sender_id):
-        """Process a single message: route it to targets and handle mirror mode."""
+        """Process a single message: route it to targets."""
         msg_topic_id = self._get_message_topic_id(message)
 
         # ── Rule-based forwarding ──
@@ -386,12 +392,19 @@ class TelegramForwarder:
                     sender_id = msg.sender_id if msg.sender_id else "Unknown"
                     await self._process_message(msg, source_chat_id, sender_id)
 
-                    # Track that we've seen this message ID, whether we forwarded it or ignored it
-                    self._update_last_id(source_chat_id, msg.id)
+                    # Track message ID but defer disk write (batch save)
+                    self._update_last_id(source_chat_id, msg.id, save=False)
                     count += 1
+
+                    # Periodic save every 50 messages
+                    if count % 50 == 0:
+                        self._save_state()
 
                     # Small delay to prevent flood waits during mass catch-up
                     await asyncio.sleep(0.1)
+
+                # Final save after processing all messages for this chat
+                self._save_state()
 
                 if count > 0:
                     logger.info(f"Caught up with {count} missed messages in {source_info}")
@@ -400,9 +413,11 @@ class TelegramForwarder:
 
             except FloodWaitError as e:
                 logger.warning(f"Rate limited during sync. Waiting {e.seconds} seconds...")
+                self._save_state()
                 await asyncio.sleep(e.seconds)
             except Exception as e:
                 logger.error(f"Error catching up on {source_chat_id}: {e}")
+                self._save_state()
 
         logger.info("Catch-up sync complete.")
 
@@ -418,7 +433,6 @@ class TelegramForwarder:
                     target_info = await self.get_entity_info(target_chat, target_topic)
                     target_infos.append(target_info)
                 logger.info(f"  {source_info} -> {', '.join(target_infos)}")
-
 
         @self.client.on(events.NewMessage(chats=self.source_chat_ids))
         async def forward_handler(event):
@@ -453,11 +467,12 @@ class TelegramForwarder:
             logger.info("Telegram forwarder is now running. Press Ctrl+C to stop.")
             await self.client.run_until_disconnected()
 
-        except KeyboardInterrupt:
-            logger.info("Received interrupt signal. Stopping...")
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
         finally:
+            # Save state before exiting
+            if self.sync_enabled:
+                self._save_state()
             await self.client.disconnect()
             logger.info("Client disconnected")
 
@@ -473,10 +488,10 @@ async def main():
     args = parser.parse_args()
 
     # Resolve: CLI flag > env var > default
-    disable_console = args.disable_console_log if args.disable_console_log else _env_bool('DISABLE_CONSOLE_LOG')
+    disable_console = args.disable_console_log if args.disable_console_log is not None else _env_bool('DISABLE_CONSOLE_LOG')
     setup_logging(disable_console=disable_console)
 
-    remove_sig = args.remove_forward_signature if args.remove_forward_signature else None
+    remove_sig = args.remove_forward_signature if args.remove_forward_signature is not None else None
 
     try:
         forwarder = TelegramForwarder(remove_forward_signature=remove_sig)

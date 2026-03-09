@@ -1,6 +1,6 @@
 # Telegram Forwarder
 
-Real-time Telegram message forwarder — listens to source chats and instantly forwards to one or more targets. Supports forum topics, mirror mode with auto-topic creation, and both bot & user accounts.
+Real-time Telegram message forwarder — listens to source chats and instantly forwards to one or more targets. Supports forum topics, catch-up sync, and both bot & user accounts.
 
 ---
 
@@ -156,11 +156,17 @@ TARGET_4=-1002222222222/10,-1003333333333/15
 
 ### Compact Format (still supported)
 
+Comma separates **rules**, colon separates **source:target(s)** within a rule:
+
 ```env
+# Two separate rules
 FORWARDING_RULES=-1001111111111:-1002222222222,-1003333333333:-1004444444444
+
+# One-to-many (single rule with multiple targets)
+FORWARDING_RULES=-1001111111111:-1002222222222:-1003333333333
 ```
 
-Format: `source[/topic]:target1[/topic]:target2[/topic],...`
+Format: `source[/topic]:target1[/topic][:target2[/topic]], next_source:next_target`
 
 ### Legacy Format (still supported)
 
@@ -232,10 +238,9 @@ If the script goes offline, User accounts can catch up on missed messages:
 |---------|----------|
 | `Missing API_ID or API_HASH` | Check `.env` file |
 | `No forwarding rules configured` | Set `SOURCE_N`/`TARGET_N` or `FORWARDING_RULES` |
-| `Error getting entity info` | Account/bot doesn't have access to that chat |
-
 | Rate limited | Script handles automatically; reduce volume if frequent |
 | Messages not in topic | Verify topic ID (copy message link to check) |
+| `Error getting entity info` | Account/bot doesn't have access to that chat |
 
 ---
 
