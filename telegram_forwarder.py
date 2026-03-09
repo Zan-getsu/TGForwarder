@@ -50,6 +50,7 @@ class TelegramForwarder:
         self.api_id = os.getenv('API_ID')
         self.api_hash = os.getenv('API_HASH')
         self.bot_token = os.getenv('BOT_TOKEN', '').strip() or None
+        self.session_string = os.getenv('SESSION_STRING', '').strip() or None
 
         # Options: env vars as defaults, CLI args override
         env_remove_sig = _env_bool('REMOVE_FORWARD_SIGNATURE')
@@ -93,9 +94,12 @@ class TelegramForwarder:
         if self.bot_token:
             self.client = TelegramClient('sessions/bot_session', self.api_id, self.api_hash)
             logger.info("Initialized in bot mode")
+        elif self.session_string:
+            self.client = TelegramClient('sessions/user_session', self.api_id, self.api_hash)
+            logger.info("Initialized in user mode (session string)")
         else:
             self.client = TelegramClient('sessions/user_session', self.api_id, self.api_hash)
-            logger.info("Initialized in user mode")
+            logger.info("Initialized in user mode (interactive auth required)")
 
     # ─── Parsing helpers ───────────────────────────────────────
 
@@ -243,9 +247,12 @@ class TelegramForwarder:
 
     async def start_client(self):
         """Start the Telegram client and handle authentication."""
-        await self.client.start(bot_token=self.bot_token if self.bot_token else None)
-
-        if not self.bot_token:
+        if self.bot_token:
+            await self.client.start(bot_token=self.bot_token)
+        elif self.session_string:
+            await self.client.start(session_string=self.session_string)
+        else:
+            await self.client.start()
             if not await self.client.is_user_authorized():
                 phone = input("Enter your phone number: ")
                 await self.client.send_code_request(phone)
@@ -460,6 +467,8 @@ async def main():
                         help='Remove "Forward from..." signature (overrides REMOVE_FORWARD_SIGNATURE env)')
     parser.add_argument('--disable-console-log', '-q', action='store_true', default=None,
                         help='Disable console logging (overrides DISABLE_CONSOLE_LOG env)')
+    parser.add_argument('--generate-session', action='store_true',
+                        help='Generate a session string for use in Docker (run locally once)')
 
     args = parser.parse_args()
 
@@ -468,6 +477,10 @@ async def main():
     setup_logging(disable_console=disable_console)
 
     remove_sig = args.remove_forward_signature if args.remove_forward_signature else None
+
+    if args.generate_session:
+        await generate_session_string()
+        return
 
     try:
         forwarder = TelegramForwarder(remove_forward_signature=remove_sig)
@@ -478,6 +491,41 @@ async def main():
         print("You can use .env.example as a template.")
     except Exception as e:
         logger.error(f"Application error: {e}")
+
+
+async def generate_session_string():
+    """Generate a session string for use in Docker."""
+    api_id = os.getenv('API_ID')
+    api_hash = os.getenv('API_HASH')
+
+    if not all([api_id, api_hash]):
+        logger.error("API_ID and API_HASH must be set in .env file")
+        print("\nPlease set API_ID and API_HASH in your .env file first.")
+        return
+
+    client = TelegramClient('sessions/temp_session', int(api_id), api_hash)
+    await client.connect()
+
+    if not await client.is_user_authorized():
+        phone = input("Enter your phone number: ")
+        await client.send_code_request(phone)
+        code = input("Enter the code you received: ")
+        try:
+            await client.sign_in(phone, code)
+        except SessionPasswordNeededError:
+            password = input("Enter your 2FA password: ")
+            await client.sign_in(password=password)
+
+    session_string = client.session.save()
+    await client.disconnect()
+
+    print("\n" + "=" * 60)
+    print("SESSION STRING (copy this to SESSION_STRING in .env):")
+    print("=" * 60)
+    print(session_string)
+    print("=" * 60)
+    print("\nAdd this string to your .env file as SESSION_STRING=...")
+    print("Then you can run the Docker container without interactive auth!")
 
 
 if __name__ == "__main__":

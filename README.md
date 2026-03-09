@@ -78,7 +78,31 @@ docker run -d \
   tg-forwarder
 ```
 
-> **First run (user mode):** Run interactively first: `docker compose run forwarder`. After the session is saved, restart with `docker compose up -d`.
+### User Mode Authentication (for Docker)
+
+**Option 1: Generate a session string (recommended)**
+
+Run locally once to generate a session string:
+
+```bash
+python telegram_forwarder.py --generate-session
+```
+
+Follow the prompts (phone → code → 2FA), then copy the output string to your `.env`:
+
+```env
+SESSION_STRING=1BVtsOKwL... (paste the full string here)
+```
+
+Now Docker can start without interactive input!
+
+**Option 2: Interactive container (first run only)**
+
+```bash
+docker compose run forwarder
+# Complete the phone/code/2FA prompts
+# Then restart normally: docker compose up -d
+```
 
 ---
 
@@ -89,6 +113,7 @@ docker run -d \
 | `API_ID` | ✅ | Telegram API ID |
 | `API_HASH` | ✅ | Telegram API Hash |
 | `BOT_TOKEN` | ❌ | Bot token (leave empty for user mode) |
+| `SESSION_STRING` | ❌ | Session string for user mode (alternative to interactive auth) |
 | `REMOVE_FORWARD_SIGNATURE` | ❌ | `true` = send clean copies without "Forwarded from..." header |
 | `DISABLE_CONSOLE_LOG` | ❌ | `true` = log only to file, no console output |
 | `SYNC_MISSED_MESSAGES` | ❌ | `true` = catch up on messages missed while bot was offline |
@@ -178,10 +203,10 @@ If the script goes offline, User accounts can catch up on missed messages:
 | Feature | User Mode | Bot Mode |
 |---|-----------|----------|
 | **Setup** | Leave `BOT_TOKEN` empty | Set `BOT_TOKEN` |
-| **Auth** | Phone + code + optional 2FA | Instant |
+| **Auth** | Phone + code + optional 2FA (or use `SESSION_STRING`) | Instant |
 | **History Sync** | ✅ Supported (`SYNC_MISSED_MESSAGES`) | ❌ Unusable (Telegram API refuses) |
 | **Access** | Any chat you're in | Only chats where bot is added |
-| **Session** | `sessions/user_session.session` | `sessions/bot_session.session` |
+| **Session** | `sessions/user_session.session` or `SESSION_STRING` env | `sessions/bot_session.session` |
 
 ---
 
