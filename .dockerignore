@@ -1,0 +1,16 @@
+.git
+.gitignore
+.env
+*.session
+*.session-journal
+*.log
+__pycache__
+*.pyc
+LICENSE
+README.md
+.env.example
+Dockerfile
+docker-compose.yml
+.dockerignore
+.vscode
+.idea

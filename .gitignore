@@ -129,6 +129,7 @@ dmypy.json
 .pyre/
 
 # Telegram session files
+sessions/
 *.session
 *.session-journal
 

@@ -52,40 +52,63 @@ class TelegramForwarder:
             raise ValueError("Missing API_ID or API_HASH. Check your .env file.")
         
         # Parse forwarding configuration
+        # forwarding_map: {(source_chat_id, source_topic_id|None): [(target_chat_id, target_topic_id|None), ...]}
         self.forwarding_map = self._parse_forwarding_rules()
         
         if not self.forwarding_map:
             raise ValueError("No forwarding rules configured. Set either SOURCE_ID/TARGET_ID or FORWARDING_RULES.")
         
+        # Extract unique source chat IDs for event registration
+        self.source_chat_ids = list({src_chat for src_chat, _ in self.forwarding_map.keys()})
+        
+        # Ensure session directory exists
+        os.makedirs('sessions', exist_ok=True)
+        
         # Initialize Telegram client
         if self.bot_token:
             # Bot mode
-            self.client = TelegramClient('bot_session', self.api_id, self.api_hash)
+            self.client = TelegramClient('sessions/bot_session', self.api_id, self.api_hash)
             logger.info("Initialized in bot mode")
         else:
             # User mode
-            self.client = TelegramClient('user_session', self.api_id, self.api_hash)
+            self.client = TelegramClient('sessions/user_session', self.api_id, self.api_hash)
             logger.info("Initialized in user mode")
     
+    @staticmethod
+    def _parse_id_topic(part):
+        """Parse a 'chat_id/topic_id' or 'chat_id' string into (chat_id, topic_id|None)."""
+        if '/' in part:
+            chat_str, topic_str = part.split('/', 1)
+            chat_id = int(chat_str)
+            topic_id = int(topic_str)
+            return (chat_id, topic_id)
+        else:
+            return (int(part), None)
+    
     def _parse_forwarding_rules(self):
-        """Parse forwarding rules from environment variables."""
+        """Parse forwarding rules from environment variables.
+        
+        Returns a dict mapping (source_chat_id, source_topic_id|None) to
+        a list of (target_chat_id, target_topic_id|None) tuples.
+        
+        Format: source_id[/topic]:target_id[/topic]:target_id[/topic],...
+        """
         forwarding_map = {}
         
         # Check for legacy single source/target configuration
         if self.source_id and self.target_id:
             try:
-                source_id = int(self.source_id)
-                target_id = int(self.target_id)
-                forwarding_map[source_id] = [target_id]
+                source_key = (int(self.source_id), None)
+                target_val = (int(self.target_id), None)
+                forwarding_map[source_key] = [target_val]
                 logger.info("Using legacy single source/target configuration")
                 return forwarding_map
             except ValueError:
                 raise ValueError("SOURCE_ID and TARGET_ID must be valid integers.")
         
-        # Parse new multiple forwarding rules
+        # Parse multiple forwarding rules with optional topic IDs
         if self.forwarding_rules:
             try:
-                # Format: source1:target1:target2,source2:target3,source3:target4
                 rules = self.forwarding_rules.split(',')
                 for rule in rules:
                     rule = rule.strip()
@@ -96,14 +119,13 @@ class TelegramForwarder:
                     if len(parts) < 2:
                         raise ValueError(f"Invalid forwarding rule format: {rule}")
                     
-                    source_id = int(parts[0])
-                    target_ids = [int(target) for target in parts[1:]]
+                    source_key = self._parse_id_topic(parts[0])
+                    target_list = [self._parse_id_topic(t) for t in parts[1:]]
                     
-                    if source_id in forwarding_map:
-                        # Extend existing targets for this source
-                        forwarding_map[source_id].extend(target_ids)
+                    if source_key in forwarding_map:
+                        forwarding_map[source_key].extend(target_list)
                     else:
-                        forwarding_map[source_id] = target_ids
+                        forwarding_map[source_key] = target_list
                 
                 logger.info(f"Parsed {len(forwarding_map)} forwarding rules")
                 return forwarding_map
@@ -132,81 +154,123 @@ class TelegramForwarder:
         
         logger.info("Client started successfully")
     
-    async def get_entity_info(self, entity_id):
-        """Get information about an entity (user, chat, or channel)."""
+    async def get_entity_info(self, entity_id, topic_id=None):
+        """Get information about an entity (user, chat, or channel), optionally with topic."""
         try:
             entity = await self.client.get_entity(entity_id)
             if hasattr(entity, 'title'):
-                return f"{entity.title} (ID: {entity_id})"
+                info = f"{entity.title} (ID: {entity_id})"
             elif hasattr(entity, 'first_name'):
                 name = entity.first_name
                 if hasattr(entity, 'last_name') and entity.last_name:
                     name += f" {entity.last_name}"
-                return f"{name} (ID: {entity_id})"
+                info = f"{name} (ID: {entity_id})"
             else:
-                return f"Entity (ID: {entity_id})"
+                info = f"Entity (ID: {entity_id})"
+            
+            if topic_id is not None:
+                info += f" [Topic: {topic_id}]"
+            return info
         except Exception as e:
             logger.error(f"Error getting entity info for {entity_id}: {e}")
-            return f"Unknown Entity (ID: {entity_id})"
+            suffix = f" [Topic: {topic_id}]" if topic_id is not None else ""
+            return f"Unknown Entity (ID: {entity_id}){suffix}"
+    
+    def _get_message_topic_id(self, message):
+        """Extract the forum topic ID from a message, or None if not in a topic."""
+        reply_to = message.reply_to
+        if reply_to is None:
+            return None
+        # If forum_topic flag is set, the topic ID is in reply_to_top_id or reply_to_msg_id
+        if getattr(reply_to, 'forum_topic', False):
+            # reply_to_top_id is the topic root; if absent, reply_to_msg_id is the topic root itself
+            return reply_to.reply_to_top_id or reply_to.reply_to_msg_id
+        return None
+    
+    def _find_targets(self, source_chat_id, msg_topic_id):
+        """Find matching target list for a source chat + topic combination.
+        
+        Priority:
+          1. Exact match: (source_chat_id, msg_topic_id)
+          2. Wildcard match: (source_chat_id, None) — matches all topics
+        """
+        # Try exact match first
+        targets = self.forwarding_map.get((source_chat_id, msg_topic_id))
+        if targets:
+            return targets
+        # Fall back to wildcard (no topic filter)
+        return self.forwarding_map.get((source_chat_id, None), [])
     
     async def setup_forwarding(self):
         """Set up message forwarding from multiple sources to their respective targets."""
         # Log all forwarding rules
         logger.info("Setting up forwarding rules:")
-        for source_id, target_ids in self.forwarding_map.items():
-            source_info = await self.get_entity_info(source_id)
+        for (source_chat, source_topic), targets in self.forwarding_map.items():
+            source_info = await self.get_entity_info(source_chat, source_topic)
             target_infos = []
-            for target_id in target_ids:
-                target_info = await self.get_entity_info(target_id)
+            for target_chat, target_topic in targets:
+                target_info = await self.get_entity_info(target_chat, target_topic)
                 target_infos.append(target_info)
             logger.info(f"  {source_info} -> {', '.join(target_infos)}")
         
-        # Get all source IDs for the event handler
-        source_ids = list(self.forwarding_map.keys())
-        
-        @self.client.on(events.NewMessage(chats=source_ids))
+        @self.client.on(events.NewMessage(chats=self.source_chat_ids))
         async def forward_handler(event):
             """Handle new messages and forward them to configured targets."""
             try:
-                # Get message details
                 message = event.message
-                source_id = event.chat_id
+                source_chat_id = event.chat_id
                 sender_id = message.sender_id if message.sender_id else "Unknown"
                 
-                # Get target IDs for this source
-                target_ids = self.forwarding_map.get(source_id, [])
-                if not target_ids:
-                    logger.warning(f"No targets configured for source {source_id}")
+                # Extract the topic ID from the incoming message
+                msg_topic_id = self._get_message_topic_id(message)
+                
+                # Find matching targets (exact topic match, then wildcard)
+                targets = self._find_targets(source_chat_id, msg_topic_id)
+                if not targets:
+                    logger.debug(f"No targets for source {source_chat_id} topic {msg_topic_id}, skipping")
                     return
                 
-                source_info = await self.get_entity_info(source_id)
+                source_info = await self.get_entity_info(source_chat_id, msg_topic_id)
                 logger.info(f"Received message from {sender_id} in {source_info}")
                 
-                # Forward to all configured targets
-                for target_id in target_ids:
+                # Forward to all matched targets
+                for target_chat, target_topic in targets:
                     try:
-                        target_info = await self.get_entity_info(target_id)
+                        target_info = await self.get_entity_info(target_chat, target_topic)
                         
                         if self.remove_forward_signature:
                             # Send as new message without "Forward from..." signature
                             await self.client.send_message(
-                                entity=target_id,
+                                entity=target_chat,
                                 message=message.message,
                                 file=message.media,
-                                parse_mode='html' if message.entities else None
+                                parse_mode='html' if message.entities else None,
+                                reply_to=target_topic
                             )
                             logger.info(f"Successfully sent message (without forward signature) to {target_info}")
                         else:
-                            # Forward the message with "Forward from..." signature
-                            await self.client.forward_messages(
-                                entity=target_id,
-                                messages=message.id,
-                                from_peer=source_id
-                            )
-                            logger.info(f"Successfully forwarded message to {target_info}")
+                            if target_topic:
+                                # forward_messages doesn't support topic placement,
+                                # so we send as a new message to the target topic instead.
+                                await self.client.send_message(
+                                    entity=target_chat,
+                                    message=message.message,
+                                    file=message.media,
+                                    parse_mode='html' if message.entities else None,
+                                    reply_to=target_topic
+                                )
+                                logger.info(f"Successfully sent message to {target_info}")
+                            else:
+                                # Forward with "Forward from..." signature
+                                await self.client.forward_messages(
+                                    entity=target_chat,
+                                    messages=message.id,
+                                    from_peer=source_chat_id
+                                )
+                                logger.info(f"Successfully forwarded message to {target_info}")
                             
                     except Exception as e:
-                        target_info = await self.get_entity_info(target_id)
+                        target_info = await self.get_entity_info(target_chat, target_topic)
                         logger.error(f"Error forwarding to {target_info}: {e}")
                 
             except FloodWaitError as e:

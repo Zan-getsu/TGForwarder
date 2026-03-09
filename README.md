@@ -1,219 +1,257 @@
 # Telegram Forwarder
 
-A Python script using Telethon to automatically forward messages from a source chat/group/channel to a target destination.
+Real-time Telegram message forwarder — listens to source chats and instantly forwards to one or more targets. Supports forum topics, multiple routing patterns, and both bot & user accounts.
 
-## Features
+---
 
-- Forward messages from any Telegram chat, group, or channel
-- **Multiple source/target mapping support**
-- **One-to-many and many-to-one forwarding**
-- Support for both user accounts and bot accounts
-- Optional removal of "Forward from..." signature
-- Optional quiet mode for console logging
-- Automatic handling of rate limits
-- Comprehensive logging
-- Easy configuration via environment variables
+## ⚡ Quick Start (5 minutes)
 
-## Prerequisites
+### 1. Get your credentials
 
-1. **Telegram API Credentials**: Get your `api_id` and `api_hash` from [https://my.telegram.org](https://my.telegram.org)
-2. **Bot Token** (optional): If you want to use a bot account, get a bot token from [@BotFather](https://t.me/BotFather)
-3. **Chat IDs**: You need the IDs of the source and target chats/groups/channels
+| What | Where |
+|------|-------|
+| `API_ID` + `API_HASH` | [my.telegram.org](https://my.telegram.org) → API development tools |
+| `BOT_TOKEN` *(optional)* | [@BotFather](https://t.me/BotFather) on Telegram |
+| Chat IDs | [@userinfobot](https://t.me/userinfobot) or [@get_id_bot](https://t.me/get_id_bot) |
 
-## Installation
+### 2. Clone & install
 
-1. Clone this repository:
 ```bash
-git clone https://github.com/Linuxmaster14/TGForwarder.git
+git clone https://github.com/Zan-getsu/TGForwarder.git
 cd TGForwarder
-```
-
-2. Install the required dependencies:
-```bash
 pip install -r requirements.txt
 ```
 
-3. Create a `.env` file based on the example:
+### 3. Configure
+
 ```bash
 cp .env.example .env
 ```
 
-4. Edit the `.env` file and fill in your credentials:
+Edit `.env` with your values:
 
-**Option 1: Single Source/Target (Legacy)**
 ```env
-API_ID=your_api_id_here
-API_HASH=your_api_hash_here
-BOT_TOKEN=your_bot_token_here  # Optional, for bot mode
-SOURCE_ID=your_source_chat_id
-TARGET_ID=your_target_chat_id
+API_ID=12345678
+API_HASH=abcdef1234567890abcdef1234567890
+BOT_TOKEN=                # leave empty for user-account mode
+FORWARDING_RULES=-1001111111111:-1002222222222
 ```
 
-**Option 2: Multiple Sources/Targets (Recommended)**
-```env
-API_ID=your_api_id_here
-API_HASH=your_api_hash_here
-BOT_TOKEN=your_bot_token_here  # Optional, for bot mode
-FORWARDING_RULES=-1001111111111:-1002222222222,-1003333333333:-1004444444444
-```
-
-## Getting Chat IDs
-
-To find chat IDs, you can:
-
-1. **For private chats**: Use the user's ID (positive number)
-2. **For groups/channels**: Use the negative ID format
-   - For groups: `-100` + group ID (e.g., `-1001234567890`)
-   - For channels: `-100` + channel ID (e.g., `-1001234567890`)
-
-You can use tools like [@userinfobot](https://t.me/userinfobot) or [@get_id_bot](https://t.me/get_id_bot) to get chat IDs.
-
-## Usage
-
-Run the script with various options:
+### 4. Run
 
 ```bash
-# Basic usage
 python telegram_forwarder.py
-
-# Remove "Forward from..." signature (sends as new messages)
-python telegram_forwarder.py --remove-forward-signature
-
-# Disable console logging (only log to file)
-python telegram_forwarder.py --disable-console-log
-
-# Use both options
-python telegram_forwarder.py -r -q
 ```
 
-### Command Line Arguments
+That's it. The forwarder is now listening and will forward every new message from source → target.
 
-| Argument | Short | Description |
-|----------|-------|-------------|
-| `--remove-forward-signature` | `-r` | Remove "Forward from..." signature by sending as new messages instead of forwarding |
-| `--disable-console-log` | `-q` | Disable console logging (only log to telegram_forwarder.log file) |
+> **First run (user mode only):** You'll be prompted for your phone number, verification code, and 2FA password if enabled. A session file is saved so you won't need to re-authenticate.
 
-### First Run
+---
 
-- **User Mode**: If you're not using a bot token, you'll be prompted to enter your phone number and verification code
-- **Bot Mode**: If you provided a bot token, the script will start immediately
+## � Docker Deployment
 
-The script will run continuously and forward any new messages from the source to the target.
+### Using Docker Compose (recommended)
 
-## Configuration Options
+```bash
+# 1. Configure your .env file
+cp .env.example .env
+# edit .env with your values
 
-### Environment Variables
+# 2. Build and run
+docker compose up -d
+
+# View logs
+docker compose logs -f
+
+# Stop
+docker compose down
+```
+
+Session files are persisted in the `./sessions/` directory so authentication survives container restarts.
+
+### Using Docker directly
+
+```bash
+docker build -t tg-forwarder .
+docker run -d \
+  --name tg-forwarder \
+  --restart unless-stopped \
+  --env-file .env \
+  -v ./sessions:/app/sessions \
+  tg-forwarder
+```
+
+### CLI options with Docker
+
+```bash
+# Remove forward signature
+docker compose run --rm forwarder -r
+
+# Quiet mode
+docker compose run --rm forwarder -q
+```
+
+> **First run (user mode):** You must run interactively the first time to authenticate: `docker compose run forwarder`. After the session is saved, restart with `docker compose up -d`.
+
+---
+
+## �📋 Environment Variables
 
 | Variable | Required | Description |
-|----------|----------|-------------|
-| `API_ID` | Yes | Your Telegram API ID |
-| `API_HASH` | Yes | Your Telegram API Hash |
-| `BOT_TOKEN` | No | Bot token for bot mode (leave empty for user mode) |
-| `SOURCE_ID` | No* | ID of the source chat/group/channel (legacy single mode) |
-| `TARGET_ID` | No* | ID of the target chat/group/channel (legacy single mode) |
-| `FORWARDING_RULES` | No* | Multiple forwarding rules (see format below) |
+|----------|:--------:|-------------|
+| `API_ID` | ✅ | Telegram API ID from [my.telegram.org](https://my.telegram.org) |
+| `API_HASH` | ✅ | Telegram API Hash from [my.telegram.org](https://my.telegram.org) |
+| `BOT_TOKEN` | ❌ | Bot token from [@BotFather](https://t.me/BotFather). Leave empty for user-account mode |
+| `FORWARDING_RULES` | ✅* | Forwarding rules (see syntax below) |
+| `SOURCE_ID` | ✅* | Legacy: single source chat ID |
+| `TARGET_ID` | ✅* | Legacy: single target chat ID |
 
-*Either `SOURCE_ID`/`TARGET_ID` OR `FORWARDING_RULES` must be provided.
+> *\* Provide either `FORWARDING_RULES` **or** `SOURCE_ID`+`TARGET_ID`*
 
-### Forwarding Rules Format
+---
 
-The `FORWARDING_RULES` environment variable supports flexible mapping:
+## 🔀 Forwarding Rules
 
-**Format**: `source_id:target_id1:target_id2,source_id2:target_id3`
+### Syntax
 
-**Examples**:
-```env
-# One-to-one mapping
-FORWARDING_RULES=-1001111111111:-1002222222222
-
-# One-to-many (one source to multiple targets)
-FORWARDING_RULES=-1001111111111:-1002222222222:-1003333333333
-
-# Many-to-one (multiple sources to one target)
-FORWARDING_RULES=-1001111111111:-1004444444444,-1002222222222:-1004444444444
-
-# Complex mapping
-FORWARDING_RULES=-1001111111111:-1002222222222,-1001111111111:-1003333333333,-1004444444444:-1005555555555
+```
+source_id[/topic] : target_id[/topic] : target_id[/topic] , next_rule...
 ```
 
-## Forwarding Patterns
+- **`:`** separates source from targets (first part = source, rest = targets)
+- **`,`** separates independent rules
+- **`/topic_id`** optional — targets a specific forum topic
 
-The script supports various forwarding patterns:
+### Examples
 
-### 1. One-to-One Forwarding
-Forward messages from one source to one target:
 ```env
+# ┌─────────────────────── One-to-one ───────────────────────┐
 FORWARDING_RULES=-1001111111111:-1002222222222
-```
 
-### 2. One-to-Many Forwarding
-Forward messages from one source to multiple targets:
-```env
+# ┌─────────────────────── One-to-many ──────────────────────┐
+# Source broadcasts to 3 targets
 FORWARDING_RULES=-1001111111111:-1002222222222:-1003333333333:-1004444444444
+
+# ┌─────────────────────── Many-to-one ──────────────────────┐
+# 3 sources aggregate into 1 target
+FORWARDING_RULES=-1001111111111:-1004444444444,-1002222222222:-1004444444444,-1003333333333:-1004444444444
+
+# ┌─────────────────────── Complex mix ──────────────────────┐
+FORWARDING_RULES=-1001111111111:-1002222222222,-1003333333333:-1004444444444:-1005555555555
 ```
 
-### 3. Many-to-One Forwarding
-Forward messages from multiple sources to one target:
+### Forum Topic Forwarding
+
+Append `/topic_id` to any chat ID to forward from/to a specific topic:
+
 ```env
-FORWARDING_RULES=-1001111111111:-1005555555555,-1002222222222:-1005555555555,-1003333333333:-1005555555555
+# Topic 5 in source → Topic 10 in target
+FORWARDING_RULES=-1001111111111/5:-1002222222222/10
+
+# Topic 5 → multiple target topics
+FORWARDING_RULES=-1001111111111/5:-1002222222222/10:-1003333333333/15
+
+# All topics (wildcard) → one specific target topic
+FORWARDING_RULES=-1001111111111:-1002222222222/10
+
+# Specific source topic → target General chat (no /topic)
+FORWARDING_RULES=-1001111111111/5:-1002222222222
 ```
 
-### 4. Complex Mapping
-Mix of different patterns:
-```env
-FORWARDING_RULES=-1001111111111:-1002222222222,-1001111111111:-1003333333333,-1004444444444:-1005555555555:-1006666666666
+> **Priority:** If both a specific topic rule **and** a wildcard rule exist for the same source chat, the specific topic rule wins.
+
+#### Finding Topic IDs
+
+- **From a message link:** Right-click any message in a topic → Copy Link → URL format: `https://t.me/c/CHANNEL_ID/TOPIC_ID/MESSAGE_ID`
+- **General topic:** Always ID `1`
+- **Bot inspector:** Forward a message to [@raw_info_bot](https://t.me/raw_info_bot)
+
+---
+
+## 🔧 Command Line Options
+
+```bash
+python telegram_forwarder.py [OPTIONS]
 ```
 
-### User Mode vs Bot Mode
+| Flag | Short | What it does |
+|------|:-----:|--------------|
+| `--remove-forward-signature` | `-r` | Sends as a new message instead of forwarding (removes "Forwarded from..." header) |
+| `--disable-console-log` | `-q` | Suppresses console output, logs only to `telegram_forwarder.log` |
 
-- **User Mode**: Uses your personal Telegram account. Can access any chat you're a member of.
-- **Bot Mode**: Uses a bot account. The bot must be added to both source and target chats with appropriate permissions.
+```bash
+# Examples
+python telegram_forwarder.py              # default: forward with signature + console logs
+python telegram_forwarder.py -r           # clean copy, no "Forwarded from..."
+python telegram_forwarder.py -q           # silent console, file-only logging
+python telegram_forwarder.py -r -q        # both options combined
+```
 
-## Important Notes
+---
 
-1. **Rate Limits**: The script automatically handles Telegram's rate limits
-2. **Permissions**: Ensure the account/bot has necessary permissions in both source and target chats
-3. **Privacy**: Be mindful of privacy and legal considerations when forwarding messages
-4. **Session Files**: The script creates session files (`user_session.session` or `bot_session.session`) to avoid re-authentication
+## 🤖 Bot Mode vs User Mode
 
-## Logging
+| | User Mode | Bot Mode |
+|---|-----------|----------|
+| **Setup** | Leave `BOT_TOKEN` empty | Set `BOT_TOKEN` in `.env` |
+| **Auth** | Phone + code + optional 2FA | Instant (token-based) |
+| **Access** | Any chat you're a member of | Only chats where the bot is added |
+| **Permissions** | Your account's permissions | Bot must have read + send permissions |
+| **Session file** | `user_session.session` | `bot_session.session` |
 
-The script provides detailed logging including:
-- Connection status
-- Message forwarding events
-- Error handling
-- Rate limit notifications
+---
 
-### Log Output
-- **Default**: Logs to both console and `telegram_forwarder.log` file
-- **Quiet mode** (`-q` flag): Logs only to `telegram_forwarder.log` file
+## 🔍 Finding Chat IDs
 
-### Forward Signature Options
-- **Default**: Messages are forwarded with "Forward from..." signature
-- **Remove signature** (`-r` flag): Messages are sent as new messages without the forward signature
+| Chat Type | ID Format | Example |
+|-----------|-----------|---------|
+| Private user | Positive number | `123456789` |
+| Group / Supergroup | `-100` + ID | `-1001234567890` |
+| Channel | `-100` + ID | `-1001234567890` |
 
-## Troubleshooting
+**Tools to get IDs:**
+- Forward any message to [@userinfobot](https://t.me/userinfobot) or [@get_id_bot](https://t.me/get_id_bot)
+- For groups: add [@RawDataBot](https://t.me/RawDataBot) temporarily and check the chat ID it reports
 
-### Common Issues
+---
 
-1. **Authentication Failed**: Check your API credentials
-2. **Permission Denied**: Ensure the account/bot has access to both chats
-3. **Invalid Chat ID**: Verify the chat IDs are correct
-4. **Rate Limited**: The script handles this automatically, but frequent rate limits may indicate too much activity
+## 📝 Logging
 
-### Error Messages
+| Mode | Console | File (`telegram_forwarder.log`) |
+|------|:-------:|:-------------------------------:|
+| Default | ✅ | ✅ |
+| Quiet (`-q`) | ❌ | ✅ |
 
-- `Missing required environment variables`: Check your `.env` file
-- `SOURCE_ID and TARGET_ID must be valid integers`: Ensure IDs are numbers
-- `Error getting entity info`: The account/bot cannot access the specified chat
+Logs include: connection status, forwarding events, sender/source/target details, errors, and rate-limit waits.
+
+---
+
+## ⚠️ Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| `Missing API_ID or API_HASH` | Check `.env` file has valid credentials |
+| `No forwarding rules configured` | Set either `FORWARDING_RULES` or `SOURCE_ID`+`TARGET_ID` |
+| `Error getting entity info` | Account/bot doesn't have access to that chat |
+| Rate limited frequently | Reduce the number of high-volume sources |
+| Bot not receiving messages | Ensure bot is added to BOTH source and target chats with permissions |
+| Messages not arriving in topic | Verify topic ID is correct (copy message link to check) |
+
+---
+
+## 📌 Important Notes
+
+- **Rate limits** are handled automatically — the script waits and retries
+- **Session files** are stored in `sessions/` directory — don't delete them unless you want to re-login
+- **Topic forwarding caveat:** When forwarding to a specific topic, messages are sent as new messages (not forwarded) because Telegram's API doesn't support placing forwarded messages into topics. The "Forwarded from..." header won't appear in this case
+- **Privacy:** Be mindful of Telegram's Terms of Service and privacy laws
+
+---
 
 ## License
 
-This project is licensed under the terms specified in the [`LICENSE`](./LICENSE) file.
-
-## Author
-
-Made with [Linuxmaster14](https://github.com/Linuxmaster14)
+[GNU General Public License v3.0](./LICENSE)
 
 ## Disclaimer
 
