@@ -312,42 +312,27 @@ class TelegramForwarder:
         """Send or forward a message to a specific target chat/topic."""
         target_info = await self.get_entity_info(target_chat, target_topic)
 
-        try:
-            if self.remove_forward_signature or target_topic:
-                # Send as new message (required for topic placement)
-                # For forum topics, reply_to should be the topic ID (header message ID)
-                logger.debug(f"Sending message to {target_chat} with reply_to={target_topic}")
-                await self.client.send_message(
-                    entity=target_chat,
-                    message=message.message,
-                    file=message.media,
-                    parse_mode='html' if message.entities else None,
-                    reply_to=target_topic
-                )
-                if self.remove_forward_signature:
-                    logger.info(f"Sent message (no signature) to {target_info}")
-                else:
-                    logger.info(f"Sent message to {target_info}")
-            else:
-                # Forward with "Forward from..." signature
-                # For topic forwarding, we need to forward to the topic's message thread
-                logger.debug(f"Forwarding message to {target_chat} with reply_to={target_topic}")
-                await self.client.forward_messages(
-                    entity=target_chat,
-                    messages=message.id,
-                    from_peer=source_chat_id,
-                    reply_to=target_topic
-                )
-                logger.info(f"Forwarded message to {target_info}")
-        except Exception as e:
-            logger.error(f"Error sending to {target_info}: {e}")
-            # Fallback: send without topic
+        if self.remove_forward_signature or target_topic:
+            # Send as new message (required for topic placement)
             await self.client.send_message(
                 entity=target_chat,
                 message=message.message,
                 file=message.media,
-                parse_mode='html' if message.entities else None
+                parse_mode='html' if message.entities else None,
+                reply_to=target_topic
             )
+            if self.remove_forward_signature:
+                logger.info(f"Sent message (no signature) to {target_info}")
+            else:
+                logger.info(f"Sent message to {target_info}")
+        else:
+            # Forward with "Forward from..." signature
+            await self.client.forward_messages(
+                entity=target_chat,
+                messages=message.id,
+                from_peer=source_chat_id
+            )
+            logger.info(f"Forwarded message to {target_info}")
 
     async def _process_message(self, message, source_chat_id, sender_id):
         """Process a single message: route it to targets and handle mirror mode."""
