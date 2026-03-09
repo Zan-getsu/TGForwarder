@@ -561,15 +561,13 @@ class TelegramForwarder:
             except Exception as e:
                 logger.error(f"Error in forward handler: {e}")
 
-        @self.client.on(events.NewMessage(pattern=r'^/status$'))
+        @self.client.on(events.NewMessage(pattern=r'(?i)^/status(?:@[a-zA-Z0-9_]+)?$', chats=self.source_chat_ids))
         async def status_handler(event):
             """Handle the /status command (only in source chats)."""
             try:
-                # Only answer if asked in a monitored source chat
-                if event.chat_id in self.source_chat_ids:
-                    msg = await event.respond(self._get_status_text())
-                    # Start background live-update task
-                    asyncio.create_task(self._live_update_status(msg))
+                msg = await event.respond(self._get_status_text())
+                # Start background live-update task
+                asyncio.create_task(self._live_update_status(msg))
             except Exception as e:
                 logger.error(f"Error in status handler: {e}")
 
