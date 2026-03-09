@@ -64,6 +64,17 @@ if [ -d sessions ]; then
     sudo chown -R $USER:$USER sessions/ 2>/dev/null || chown -R $USER:$USER sessions/ 2>/dev/null || true
 fi
 
+# Ask if user wants to reset sync state
+echo ""
+echo -e "\e[1;33mDo you want to sync ALL existing messages from source chats?\e[0m"
+echo -e "\e[36m  (This will delete the sync state and re-forward all messages)\e[0m"
+read -p "  Reset sync state? (y/n) " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    rm -f sessions/sync_state.json
+    echo -e "\e[1;32m✓ Sync state reset. All messages will be synced on next run.\e[0m"
+fi
+
 # Check if session was created
 if [ -f sessions/user_session.session ]; then
     echo ""

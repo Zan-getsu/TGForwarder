@@ -354,24 +354,27 @@ class TelegramForwarder:
     async def catch_up_missed_messages(self):
         """Fetch and process messages missed while the bot was offline."""
         if not self.sync_enabled:
+            logger.info("Catch-up sync is disabled (set SYNC_MISSED_MESSAGES=true to enable)")
             return
-            
+
         if self.bot_token:
             logger.warning("Catch-up sync (SYNC_MISSED_MESSAGES) is not supported in Bot mode. Telegram restricts bots from fetching chat history. Skipping catch-up.")
             return
 
         logger.info("Starting catch-up sync for missed messages...")
-        
+
         for source_chat_id in self.source_chat_ids:
             try:
                 source_info = await self.get_entity_info(source_chat_id)
                 last_id = self.sync_state.get(source_chat_id)
-                
+
                 if not last_id:
                     # First run: start from message ID 0 to pull ALL historical messages.
-                    logger.info(f"First run for {source_info}: establishing base message ID 0 to sync all history.")
+                    logger.info(f"First run for {source_info}: syncing ALL historical messages from ID 0.")
                     last_id = 0
-                
+                else:
+                    logger.info(f"Syncing messages after ID {last_id} for {source_info}")
+
                 # Fetch newer messages in chronological order (reverse=True)
                 logger.info(f"Catching up {source_info} starting from msg ID {last_id}")
                 count = 0
@@ -379,28 +382,28 @@ class TelegramForwarder:
                     # Strict protection against duplicate forwarding
                     if msg.id <= last_id:
                         continue
-                        
+
                     sender_id = msg.sender_id if msg.sender_id else "Unknown"
                     await self._process_message(msg, source_chat_id, sender_id)
-                    
+
                     # Track that we've seen this message ID, whether we forwarded it or ignored it
                     self._update_last_id(source_chat_id, msg.id)
                     count += 1
-                    
+
                     # Small delay to prevent flood waits during mass catch-up
                     await asyncio.sleep(0.1)
-                        
+
                 if count > 0:
                     logger.info(f"Caught up with {count} missed messages in {source_info}")
                 else:
-                    logger.info(f"No missed messages in {source_info}")
-                    
+                    logger.info(f"No missed messages in {source_info} (already synced up to ID {last_id})")
+
             except FloodWaitError as e:
                 logger.warning(f"Rate limited during sync. Waiting {e.seconds} seconds...")
                 await asyncio.sleep(e.seconds)
             except Exception as e:
                 logger.error(f"Error catching up on {source_chat_id}: {e}")
-                
+
         logger.info("Catch-up sync complete.")
 
     async def setup_forwarding(self):
