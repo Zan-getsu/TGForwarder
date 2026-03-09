@@ -80,9 +80,16 @@ docker run -d \
 
 ### User Mode Authentication (for Docker)
 
-**Option 1: Generate session file (recommended)**
+**Option 1: Quick script (Linux/Mac)**
 
-Run the session generator script locally:
+```bash
+chmod +x session.sh
+./session.sh
+```
+
+This will install dependencies and generate the session file automatically.
+
+**Option 2: Python script**
 
 ```bash
 python3 generate_session.py
@@ -96,7 +103,7 @@ With docker-compose (using `./sessions:/app/sessions` volume), the session is au
 docker compose up -d
 ```
 
-**Option 2: Interactive container (first run only)**
+**Option 3: Interactive container (first run only)**
 
 ```bash
 docker compose run forwarder
