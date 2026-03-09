@@ -328,6 +328,19 @@ class TelegramForwarder:
                         await self.user_client.sign_in(password=password)
             logger.info("User client started successfully (for catch-up sync)")
 
+        # Pre-warm entity cache to prevent "Could not find the input entity" errors
+        logger.info("Pre-warming entity cache (fetching recent dialogs)...")
+        try:
+            await self.client.get_dialogs(limit=100)
+        except Exception as e:
+            logger.warning(f"Error pre-warming main client cache: {e}")
+
+        if self.user_client:
+            try:
+                await self.user_client.get_dialogs(limit=100)
+            except Exception as e:
+                logger.warning(f"Error pre-warming user client cache: {e}")
+
     async def get_entity_info(self, entity_id, topic_id=None):
         """Get information about an entity (user, chat, or channel), optionally with topic."""
         try:
@@ -416,6 +429,9 @@ class TelegramForwarder:
             for target_chat, target_topic in targets:
                 try:
                     await self._send_to_target(message, source_chat_id, target_chat, target_topic)
+                    # Anti-flood delay between multiple targets
+                    if len(targets) > 1:
+                        await asyncio.sleep(1.0)
                 except Exception as e:
                     target_info = await self.get_entity_info(target_chat, target_topic)
                     logger.error(f"Error forwarding to {target_info}: {e}")
@@ -477,8 +493,8 @@ class TelegramForwarder:
                     if count % 50 == 0:
                         self._save_state()
 
-                    # Small delay to prevent flood waits during mass catch-up
-                    await asyncio.sleep(0.1)
+                    # Anti-flood delay to prevent SendMediaRequest / flood waits during mass catch-up
+                    await asyncio.sleep(2.0)
 
                 # Final save after processing all messages for this chat
                 self._save_state()
