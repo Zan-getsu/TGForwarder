@@ -241,7 +241,7 @@ When `DUAL_MODE=false` (default), the forwarder uses whichever single mode is co
 
 ## 📊 Status Command
 
-You can check whether the forwarder is active and running properly by sending `/status` in any of the configured **source chats**.
+You can check whether the forwarder is active and running properly by sending `/status` directly to your bot (or in any monitored group).
 
 The bot will reply with a beautifully formatted message that **updates in real-time** every 5 seconds (for 5 minutes) showing:
 - **Status:** Active 🟢
@@ -249,8 +249,6 @@ The bot will reply with a beautifully formatted message that **updates in real-t
 - **Uptime:** Time since the script started
 - **Forwarded:** Total messages processed successfully
 - **Tracking:** Number of source chats being monitored
-
-*(Note: The command is ignored in non-source chats to prevent spam and unauthorized access).*
 
 ---
 

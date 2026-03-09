@@ -561,9 +561,9 @@ class TelegramForwarder:
             except Exception as e:
                 logger.error(f"Error in forward handler: {e}")
 
-        @self.client.on(events.NewMessage(pattern=r'(?i)^/status(?:@[a-zA-Z0-9_]+)?$', chats=self.source_chat_ids))
+        @self.client.on(events.NewMessage(pattern=r'(?i)^/status(?:@[a-zA-Z0-9_]+)?$'))
         async def status_handler(event):
-            """Handle the /status command (only in source chats)."""
+            """Handle the /status command from any chat or direct message."""
             try:
                 msg = await event.respond(self._get_status_text())
                 # Start background live-update task
