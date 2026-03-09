@@ -329,7 +329,7 @@ class TelegramForwarder:
         """Get the name of a topic by its ID in a forum group."""
         try:
             result = await self.client(GetForumTopicsRequest(
-                channel=chat_id,
+                peer=chat_id,
                 offset_date=None,
                 offset_id=0,
                 offset_topic=0,
@@ -349,7 +349,7 @@ class TelegramForwarder:
             return self._topic_cache[cache_key]
         try:
             result = await self.client(GetForumTopicsRequest(
-                channel=chat_id,
+                peer=chat_id,
                 offset_date=None,
                 offset_id=0,
                 offset_topic=0,
@@ -367,7 +367,7 @@ class TelegramForwarder:
         """Create a new forum topic in a group. Returns the new topic ID."""
         try:
             result = await self.client(CreateForumTopicRequest(
-                channel=chat_id,
+                peer=chat_id,
                 title=title,
                 random_id=int.from_bytes(os.urandom(8), 'big')
             ))
@@ -480,6 +480,11 @@ class TelegramForwarder:
     async def catch_up_missed_messages(self):
         """Fetch and process messages missed while the bot was offline."""
         if not self.sync_enabled:
+            return
+            
+        if self.bot_token:
+            logger.warning("Catch-up sync is skipped: Telegram API restricts bots from fetching full chat history.")
+            logger.warning("To use the Catch-up Sync feature, please run in User Mode (leave BOT_TOKEN empty in .env).")
             return
             
         logger.info("Starting catch-up sync for missed messages...")
