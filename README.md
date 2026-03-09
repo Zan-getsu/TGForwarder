@@ -124,6 +124,7 @@ docker compose run forwarder
 | `REMOVE_FORWARD_SIGNATURE` | ❌ | `true` = send clean copies without "Forwarded from..." header |
 | `DISABLE_CONSOLE_LOG` | ❌ | `true` = log only to file, no console output |
 | `SYNC_MISSED_MESSAGES` | ❌ | `true` = catch up on messages missed while bot was offline |
+| `DUAL_MODE` | ❌ | `true` = bot for live forwarding + user account for catch-up sync |
 
 
 > CLI flags `-r` and `-q` still work and override the env vars.
@@ -211,15 +212,30 @@ If the script goes offline, User accounts can catch up on missed messages:
 
 ---
 
-## 🤖 Bot Mode vs User Mode
+## 🤖 Bot Mode vs User Mode vs Dual Mode
 
-| Feature | User Mode | Bot Mode |
-|---|-----------|----------|
-| **Setup** | Leave `BOT_TOKEN` empty | Set `BOT_TOKEN` |
-| **Auth** | Phone + code + 2FA (via `generate_session.py`) | Instant |
-| **History Sync** | ✅ Supported (`SYNC_MISSED_MESSAGES`) | ❌ Unusable (Telegram API refuses) |
-| **Access** | Any chat you're in | Only chats where bot is added |
-| **Session** | `sessions/user_session.session` | `sessions/bot_session.session` |
+| Feature | User Mode | Bot Mode | Dual Mode |
+|---|-----------|----------|----------|
+| **Setup** | Leave `BOT_TOKEN` empty | Set `BOT_TOKEN` | Set `BOT_TOKEN` + user session + `DUAL_MODE=true` |
+| **Auth** | Phone + code + 2FA | Instant | Bot token + user session |
+| **Live Forwarding** | ✅ User account | ✅ Bot | ✅ Bot |
+| **History Sync** | ✅ Supported | ❌ Unusable (Telegram API refuses) | ✅ User account handles sync |
+| **Access** | Any chat you're in | Only chats where bot is added | Bot chats (live) + user chats (sync) |
+
+### 🔀 Dual Mode
+
+Dual mode gives you the best of both worlds:
+- **Bot** handles real‑time forwarding (faster, less rate‑limited)
+- **User account** handles catch‑up sync (bots can't fetch history)
+
+```env
+BOT_TOKEN=123456:ABC-DEF
+SESSION_STRING=your_session_string_here
+DUAL_MODE=true
+SYNC_MISSED_MESSAGES=true
+```
+
+When `DUAL_MODE=false` (default), the forwarder uses whichever single mode is configured — no behavior change.
 
 ---
 

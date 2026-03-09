@@ -57,6 +57,9 @@ class TelegramForwarder:
         env_remove_sig = _env_bool('REMOVE_FORWARD_SIGNATURE')
         self.remove_forward_signature = remove_forward_signature if remove_forward_signature is not None else env_remove_sig
 
+        # Dual mode: bot for live forwarding, user for catch-up sync
+        self.dual_mode = _env_bool('DUAL_MODE')
+
         # Sync settings
         self.sync_enabled = _env_bool('SYNC_MISSED_MESSAGES')
         self.state_file = 'sessions/sync_state.json'
@@ -66,6 +69,21 @@ class TelegramForwarder:
         # Validate required environment variables
         if not all([self.api_id, self.api_hash]):
             raise ValueError("Missing API_ID or API_HASH. Check your .env file.")
+
+        # Validate dual mode requirements
+        if self.dual_mode:
+            if not self.bot_token:
+                raise ValueError(
+                    "DUAL_MODE requires BOT_TOKEN to be set. "
+                    "The bot handles live forwarding while the user account handles catch-up sync."
+                )
+            if not self.session_string:
+                # Check if a session file exists already
+                if not os.path.exists('sessions/user_session.session'):
+                    raise ValueError(
+                        "DUAL_MODE requires a user session. "
+                        "Set SESSION_STRING or run 'python generate_session.py' first."
+                    )
 
         # Parse forwarding configuration
         # forwarding_map: {(source_chat_id, source_topic_id|None): [(target_chat_id, target_topic_id|None), ...]}
@@ -90,8 +108,20 @@ class TelegramForwarder:
         if self.sync_enabled:
             self._load_state()
 
-        # Initialize Telegram client
-        if self.bot_token:
+        # Initialize Telegram client(s)
+        self.user_client = None
+
+        if self.dual_mode:
+            # Dual mode: bot client for live events, user client for sync
+            self.client = TelegramClient('sessions/bot_session', self.api_id, self.api_hash)
+            if self.session_string:
+                self.user_client = TelegramClient(
+                    StringSession(self.session_string), self.api_id, self.api_hash
+                )
+            else:
+                self.user_client = TelegramClient('sessions/user_session', self.api_id, self.api_hash)
+            logger.info("Initialized in DUAL mode (bot + user)")
+        elif self.bot_token:
             self.client = TelegramClient('sessions/bot_session', self.api_id, self.api_hash)
             logger.info("Initialized in bot mode")
         elif self.session_string:
@@ -247,10 +277,11 @@ class TelegramForwarder:
     # ─── Client & entity helpers ───────────────────────────────
 
     async def start_client(self):
-        """Start the Telegram client and handle authentication."""
-        if self.bot_token:
+        """Start the Telegram client(s) and handle authentication."""
+        # Start the primary client (bot in dual mode, or whichever mode is active)
+        if self.bot_token and (self.dual_mode or not self.session_string):
             await self.client.start(bot_token=self.bot_token)
-        elif self.session_string:
+        elif self.session_string and not self.dual_mode:
             # StringSession was already passed to TelegramClient constructor
             await self.client.start()
         else:
@@ -265,7 +296,28 @@ class TelegramForwarder:
                     password = input("Enter your 2FA password: ")
                     await self.client.sign_in(password=password)
 
-        logger.info("Client started successfully")
+        if self.dual_mode:
+            logger.info("Bot client started successfully")
+        else:
+            logger.info("Client started successfully")
+
+        # Start the user client if in dual mode
+        if self.user_client:
+            if self.session_string:
+                # StringSession was already passed to TelegramClient constructor
+                await self.user_client.start()
+            else:
+                await self.user_client.start()
+                if not await self.user_client.is_user_authorized():
+                    phone = input("Enter your phone number (for user client): ")
+                    await self.user_client.send_code_request(phone)
+                    code = input("Enter the code you received: ")
+                    try:
+                        await self.user_client.sign_in(phone, code)
+                    except SessionPasswordNeededError:
+                        password = input("Enter your 2FA password: ")
+                        await self.user_client.sign_in(password=password)
+            logger.info("User client started successfully (for catch-up sync)")
 
     async def get_entity_info(self, entity_id, topic_id=None):
         """Get information about an entity (user, chat, or channel), optionally with topic."""
@@ -358,16 +410,30 @@ class TelegramForwarder:
                     logger.error(f"Error forwarding to {target_info}: {e}")
 
     async def catch_up_missed_messages(self):
-        """Fetch and process messages missed while the bot was offline."""
+        """Fetch and process messages missed while the bot was offline.
+        
+        In dual mode, uses the user_client to read history (bots can't),
+        then the bot client (self.client) to send/forward messages.
+        In user-only mode, uses self.client for both reading and sending.
+        """
         if not self.sync_enabled:
             logger.info("Catch-up sync is disabled (set SYNC_MISSED_MESSAGES=true to enable)")
             return
 
-        if self.bot_token:
-            logger.warning("Catch-up sync (SYNC_MISSED_MESSAGES) is not supported in Bot mode. Telegram restricts bots from fetching chat history. Skipping catch-up.")
+        # Determine which client reads history
+        if self.dual_mode and self.user_client:
+            reader_client = self.user_client
+            logger.info("Starting catch-up sync using user account (dual mode)...")
+        elif self.bot_token and not self.dual_mode:
+            logger.warning(
+                "Catch-up sync (SYNC_MISSED_MESSAGES) is not supported in Bot-only mode. "
+                "Telegram restricts bots from fetching chat history. "
+                "Enable DUAL_MODE=true with a user session to use sync. Skipping."
+            )
             return
-
-        logger.info("Starting catch-up sync for missed messages...")
+        else:
+            reader_client = self.client
+            logger.info("Starting catch-up sync for missed messages...")
 
         for source_chat_id in self.source_chat_ids:
             try:
@@ -384,7 +450,7 @@ class TelegramForwarder:
                 # Fetch newer messages in chronological order (reverse=True)
                 logger.info(f"Catching up {source_info} starting from msg ID {last_id}")
                 count = 0
-                async for msg in self.client.iter_messages(source_chat_id, min_id=last_id, reverse=True):
+                async for msg in reader_client.iter_messages(source_chat_id, min_id=last_id, reverse=True):
                     # Strict protection against duplicate forwarding
                     if msg.id <= last_id:
                         continue
@@ -474,6 +540,9 @@ class TelegramForwarder:
             if self.sync_enabled:
                 self._save_state()
             await self.client.disconnect()
+            if self.user_client:
+                await self.user_client.disconnect()
+                logger.info("User client disconnected")
             logger.info("Client disconnected")
 
 
