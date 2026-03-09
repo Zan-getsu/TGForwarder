@@ -3,6 +3,11 @@ import logging
 import os
 import json
 import argparse
+import os
+import json
+import time
+import argparse
+from datetime import timedelta
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
@@ -69,6 +74,10 @@ class TelegramForwarder:
         # Validate required environment variables
         if not all([self.api_id, self.api_hash]):
             raise ValueError("Missing API_ID or API_HASH. Check your .env file.")
+
+        # Status tracking
+        self.start_time = time.time()
+        self.total_forwarded = 0
 
         # Validate dual mode requirements
         if self.dual_mode:
@@ -383,6 +392,7 @@ class TelegramForwarder:
                 logger.info(f"Sent message (no signature) to {target_info}")
             else:
                 logger.info(f"Sent message to {target_info}")
+            self.total_forwarded += 1
         else:
             # Forward with "Forward from..." signature
             await self.client.forward_messages(
@@ -391,6 +401,7 @@ class TelegramForwarder:
                 from_peer=source_chat_id
             )
             logger.info(f"Forwarded message to {target_info}")
+            self.total_forwarded += 1
 
     async def _process_message(self, message, source_chat_id, sender_id):
         """Process a single message: route it to targets."""
@@ -487,6 +498,37 @@ class TelegramForwarder:
 
         logger.info("Catch-up sync complete.")
 
+    def _get_status_text(self):
+        """Generate the current status text."""
+        uptime_seconds = int(time.time() - self.start_time)
+        uptime_str = str(timedelta(seconds=uptime_seconds))
+        
+        mode = "Dual (Bot + User)" if self.dual_mode else ("Bot" if self.bot_token else "User")
+        
+        return (
+            f"🤖 **TGForwarder Status**\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"**Status:** Active 🟢\n"
+            f"**Mode:** {mode}\n"
+            f"**Uptime:** `{uptime_str}`\n"
+            f"**Forwarded:** `{self.total_forwarded}` messages\n"
+            f"**Tracking:** `{len(self.source_chat_ids)}` sources\n"
+            f"━━━━━━━━━━━━━━━━━━━━"
+        )
+
+    async def _live_update_status(self, message):
+        """Background task to update the status message every 5 seconds for 5 minutes."""
+        # 60 iterations * 5 seconds = 300 seconds (5 minutes)
+        # We don't want to loop forever to avoid rate limits on stale messages
+        for _ in range(60):
+            await asyncio.sleep(5)
+            try:
+                await message.edit(self._get_status_text())
+            except Exception as e:
+                # Message might be deleted by user, or rate limited
+                logger.debug(f"Failed to update status message: {e}")
+                break
+
     async def setup_forwarding(self):
         """Set up message forwarding from multiple sources to their respective targets."""
         # Log forwarding rules
@@ -519,7 +561,19 @@ class TelegramForwarder:
             except Exception as e:
                 logger.error(f"Error in forward handler: {e}")
 
-        logger.info("Message forwarding handlers registered successfully")
+        @self.client.on(events.NewMessage(pattern=r'^/status$'))
+        async def status_handler(event):
+            """Handle the /status command (only in source chats)."""
+            try:
+                # Only answer if asked in a monitored source chat
+                if event.chat_id in self.source_chat_ids:
+                    msg = await event.respond(self._get_status_text())
+                    # Start background live-update task
+                    asyncio.create_task(self._live_update_status(msg))
+            except Exception as e:
+                logger.error(f"Error in status handler: {e}")
+
+        logger.info("Message forwarding and command handlers registered successfully")
 
     async def run(self):
         """Main method to run the forwarder."""
