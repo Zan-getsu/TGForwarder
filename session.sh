@@ -58,6 +58,12 @@ echo -e "\e[1;32mStarting Session Generator...\e[0m"
 echo ""
 python3 generate_session.py
 
+# Fix permissions (in case Docker created files as root)
+if [ -d sessions ]; then
+    echo -e "\e[1;33mFixing session file permissions...\e[0m"
+    sudo chown -R $USER:$USER sessions/ 2>/dev/null || chown -R $USER:$USER sessions/ 2>/dev/null || true
+fi
+
 # Check if session was created
 if [ -f sessions/user_session.session ]; then
     echo ""
