@@ -1,6 +1,6 @@
 # Telegram Forwarder
 
-Real-time Telegram message forwarder — listens to source chats and instantly forwards to one or more targets. Supports forum topics, multiple routing patterns, and both bot & user accounts.
+Real-time Telegram message forwarder — listens to source chats and instantly forwards to one or more targets. Supports forum topics, mirror mode with auto-topic creation, and both bot & user accounts.
 
 ---
 
@@ -33,8 +33,10 @@ Edit `.env` with your values:
 ```env
 API_ID=12345678
 API_HASH=abcdef1234567890abcdef1234567890
-BOT_TOKEN=                # leave empty for user-account mode
-FORWARDING_RULES=-1001111111111:-1002222222222
+BOT_TOKEN=
+
+SOURCE_1=-1001111111111
+TARGET_1=-1002222222222
 ```
 
 ### 4. Run
@@ -49,26 +51,20 @@ That's it. The forwarder is now listening and will forward every new message fro
 
 ---
 
-## � Docker Deployment
+## 🐳 Docker Deployment
 
 ### Using Docker Compose (recommended)
 
 ```bash
-# 1. Configure your .env file
 cp .env.example .env
 # edit .env with your values
 
-# 2. Build and run
-docker compose up -d
-
-# View logs
-docker compose logs -f
-
-# Stop
-docker compose down
+docker compose up -d        # build & run
+docker compose logs -f      # view logs
+docker compose down          # stop
 ```
 
-Session files are persisted in the `./sessions/` directory so authentication survives container restarts.
+Session files are persisted in the `./sessions/` directory.
 
 ### Using Docker directly
 
@@ -82,111 +78,127 @@ docker run -d \
   tg-forwarder
 ```
 
-### CLI options with Docker
-
-```bash
-# Remove forward signature
-docker compose run --rm forwarder -r
-
-# Quiet mode
-docker compose run --rm forwarder -q
-```
-
-> **First run (user mode):** You must run interactively the first time to authenticate: `docker compose run forwarder`. After the session is saved, restart with `docker compose up -d`.
+> **First run (user mode):** Run interactively first: `docker compose run forwarder`. After the session is saved, restart with `docker compose up -d`.
 
 ---
 
-## �📋 Environment Variables
+## 📋 Environment Variables
 
 | Variable | Required | Description |
 |----------|:--------:|-------------|
-| `API_ID` | ✅ | Telegram API ID from [my.telegram.org](https://my.telegram.org) |
-| `API_HASH` | ✅ | Telegram API Hash from [my.telegram.org](https://my.telegram.org) |
-| `BOT_TOKEN` | ❌ | Bot token from [@BotFather](https://t.me/BotFather). Leave empty for user-account mode |
-| `FORWARDING_RULES` | ✅* | Forwarding rules (see syntax below) |
-| `SOURCE_ID` | ✅* | Legacy: single source chat ID |
-| `TARGET_ID` | ✅* | Legacy: single target chat ID |
+| `API_ID` | ✅ | Telegram API ID |
+| `API_HASH` | ✅ | Telegram API Hash |
+| `BOT_TOKEN` | ❌ | Bot token (leave empty for user mode) |
+| `REMOVE_FORWARD_SIGNATURE` | ❌ | `true` = send clean copies without "Forwarded from..." header |
+| `DISABLE_CONSOLE_LOG` | ❌ | `true` = log only to file, no console output |
+| `SYNC_MISSED_MESSAGES` | ❌ | `true` = catch up on messages missed while bot was offline |
+| `MIRROR` | ❌ | `true` = enable mirror mode |
+| `AUTO_CREATE_TOPICS` | ❌ | `true` = auto-create missing topics in destination groups |
 
-> *\* Provide either `FORWARDING_RULES` **or** `SOURCE_ID`+`TARGET_ID`*
+> CLI flags `-r` and `-q` still work and override the env vars.
 
 ---
 
 ## 🔀 Forwarding Rules
 
-### Syntax
+### Numbered Pairs (recommended)
 
-```
-source_id[/topic] : target_id[/topic] : target_id[/topic] , next_rule...
-```
-
-- **`:`** separates source from targets (first part = source, rest = targets)
-- **`,`** separates independent rules
-- **`/topic_id`** optional — targets a specific forum topic
-
-### Examples
+The simplest way to configure forwarding. Set `SOURCE_N` and `TARGET_N` pairs:
 
 ```env
-# ┌─────────────────────── One-to-one ───────────────────────┐
-FORWARDING_RULES=-1001111111111:-1002222222222
+# Rule 1: one-to-one
+SOURCE_1=-1001111111111
+TARGET_1=-1002222222222
 
-# ┌─────────────────────── One-to-many ──────────────────────┐
-# Source broadcasts to 3 targets
-FORWARDING_RULES=-1001111111111:-1002222222222:-1003333333333:-1004444444444
+# Rule 2: with forum topics (source topic 5 → target topic 10)
+SOURCE_2=-1001111111111/5
+TARGET_2=-1003333333333/10
 
-# ┌─────────────────────── Many-to-one ──────────────────────┐
-# 3 sources aggregate into 1 target
-FORWARDING_RULES=-1001111111111:-1004444444444,-1002222222222:-1004444444444,-1003333333333:-1004444444444
+# Rule 3: one-to-many (comma-separated targets)
+SOURCE_3=-1004444444444
+TARGET_3=-1005555555555,-1006666666666
 
-# ┌─────────────────────── Complex mix ──────────────────────┐
-FORWARDING_RULES=-1001111111111:-1002222222222,-1003333333333:-1004444444444:-1005555555555
+# Rule 4: topic to multiple target topics
+SOURCE_4=-1001111111111/5
+TARGET_4=-1002222222222/10,-1003333333333/15
 ```
 
-### Forum Topic Forwarding
-
-Append `/topic_id` to any chat ID to forward from/to a specific topic:
+### Compact Format (still supported)
 
 ```env
-# Topic 5 in source → Topic 10 in target
-FORWARDING_RULES=-1001111111111/5:-1002222222222/10
-
-# Topic 5 → multiple target topics
-FORWARDING_RULES=-1001111111111/5:-1002222222222/10:-1003333333333/15
-
-# All topics (wildcard) → one specific target topic
-FORWARDING_RULES=-1001111111111:-1002222222222/10
-
-# Specific source topic → target General chat (no /topic)
-FORWARDING_RULES=-1001111111111/5:-1002222222222
+FORWARDING_RULES=-1001111111111:-1002222222222,-1003333333333:-1004444444444
 ```
 
-> **Priority:** If both a specific topic rule **and** a wildcard rule exist for the same source chat, the specific topic rule wins.
+Format: `source[/topic]:target1[/topic]:target2[/topic],...`
 
-#### Finding Topic IDs
+### Legacy Format (still supported)
 
-- **From a message link:** Right-click any message in a topic → Copy Link → URL format: `https://t.me/c/CHANNEL_ID/TOPIC_ID/MESSAGE_ID`
-- **General topic:** Always ID `1`
-- **Bot inspector:** Forward a message to [@raw_info_bot](https://t.me/raw_info_bot)
+```env
+SOURCE_ID=-1001111111111
+TARGET_ID=-1002222222222
+```
 
 ---
 
-## 🔧 Command Line Options
+## 🪞 Mirror Mode
 
-```bash
-python telegram_forwarder.py [OPTIONS]
+Mirror mode automatically forwards messages to the **same topic** in the destination group. Perfect for **group backups**.
+
+```env
+MIRROR=true
+AUTO_CREATE_TOPICS=true
+
+# Mirror all topics from source → backup group
+MIRROR_1=-1001111111111:-1002222222222
+
+# Mirror to multiple backup groups
+MIRROR_2=-1003333333333:-1004444444444,-1005555555555
 ```
 
-| Flag | Short | What it does |
-|------|:-----:|--------------|
-| `--remove-forward-signature` | `-r` | Sends as a new message instead of forwarding (removes "Forwarded from..." header) |
-| `--disable-console-log` | `-q` | Suppresses console output, logs only to `telegram_forwarder.log` |
+### How it works
 
-```bash
-# Examples
-python telegram_forwarder.py              # default: forward with signature + console logs
-python telegram_forwarder.py -r           # clean copy, no "Forwarded from..."
-python telegram_forwarder.py -q           # silent console, file-only logging
-python telegram_forwarder.py -r -q        # both options combined
-```
+1. Message arrives in source group, Topic "Gaming" (ID: 5)
+2. Bot looks for a topic named "Gaming" in the destination group
+3. If found → forwards to that topic
+4. If not found and `AUTO_CREATE_TOPICS=true` → creates the topic automatically, then forwards
+
+### Requirements
+
+- `MIRROR=true` must be set
+- The bot/user must be **admin with "Manage Topics"** permission in destination groups (for auto-create)
+- Topic matching is done **by name**, not by numeric ID
+
+---
+
+## 🔄 Catch-up Sync (Missed Messages)
+
+If the bot goes offline or is restarted, it will normally only forward *new* messages that arrive after it starts listening. 
+
+To catch up on messages you missed while offline:
+1. Set `SYNC_MISSED_MESSAGES=true` in `.env`
+2. The bot will save the ID of the last forwarded message to `sessions/sync_state.json`
+3. On startup, it will fetch all messages newer than that ID and forward them chronologically *before* it begins listening live.
+
+*Note: On its very first run, it will just establish a baseline so it doesn't accidentally forward the entire chat history.*
+
+---
+
+## 🔍 Finding IDs
+
+### Chat IDs
+
+| Chat Type | Format | Example |
+|-----------|--------|---------|
+| Private user | Positive number | `123456789` |
+| Group / Channel | `-100` + ID | `-1001234567890` |
+
+**Tools:** [@userinfobot](https://t.me/userinfobot), [@get_id_bot](https://t.me/get_id_bot), [@RawDataBot](https://t.me/RawDataBot)
+
+### Topic IDs
+
+- **Message link:** Right-click message → Copy Link → `https://t.me/c/CHANNEL_ID/TOPIC_ID/MESSAGE_ID`
+- **General topic:** Always ID `1`
+- **Bot:** [@raw_info_bot](https://t.me/raw_info_bot)
 
 ---
 
@@ -194,36 +206,19 @@ python telegram_forwarder.py -r -q        # both options combined
 
 | | User Mode | Bot Mode |
 |---|-----------|----------|
-| **Setup** | Leave `BOT_TOKEN` empty | Set `BOT_TOKEN` in `.env` |
-| **Auth** | Phone + code + optional 2FA | Instant (token-based) |
-| **Access** | Any chat you're a member of | Only chats where the bot is added |
-| **Permissions** | Your account's permissions | Bot must have read + send permissions |
-| **Session file** | `user_session.session` | `bot_session.session` |
-
----
-
-## 🔍 Finding Chat IDs
-
-| Chat Type | ID Format | Example |
-|-----------|-----------|---------|
-| Private user | Positive number | `123456789` |
-| Group / Supergroup | `-100` + ID | `-1001234567890` |
-| Channel | `-100` + ID | `-1001234567890` |
-
-**Tools to get IDs:**
-- Forward any message to [@userinfobot](https://t.me/userinfobot) or [@get_id_bot](https://t.me/get_id_bot)
-- For groups: add [@RawDataBot](https://t.me/RawDataBot) temporarily and check the chat ID it reports
+| **Setup** | Leave `BOT_TOKEN` empty | Set `BOT_TOKEN` |
+| **Auth** | Phone + code + optional 2FA | Instant |
+| **Access** | Any chat you're in | Only chats where bot is added |
+| **Session** | `sessions/user_session.session` | `sessions/bot_session.session` |
 
 ---
 
 ## 📝 Logging
 
-| Mode | Console | File (`telegram_forwarder.log`) |
-|------|:-------:|:-------------------------------:|
+| Mode | Console | File |
+|------|:-------:|:----:|
 | Default | ✅ | ✅ |
-| Quiet (`-q`) | ❌ | ✅ |
-
-Logs include: connection status, forwarding events, sender/source/target details, errors, and rate-limit waits.
+| `DISABLE_CONSOLE_LOG=true` | ❌ | ✅ |
 
 ---
 
@@ -231,21 +226,21 @@ Logs include: connection status, forwarding events, sender/source/target details
 
 | Problem | Solution |
 |---------|----------|
-| `Missing API_ID or API_HASH` | Check `.env` file has valid credentials |
-| `No forwarding rules configured` | Set either `FORWARDING_RULES` or `SOURCE_ID`+`TARGET_ID` |
+| `Missing API_ID or API_HASH` | Check `.env` file |
+| `No forwarding rules configured` | Set `SOURCE_N`/`TARGET_N`, `MIRROR_N`, or `FORWARDING_RULES` |
 | `Error getting entity info` | Account/bot doesn't have access to that chat |
-| Rate limited frequently | Reduce the number of high-volume sources |
-| Bot not receiving messages | Ensure bot is added to BOTH source and target chats with permissions |
-| Messages not arriving in topic | Verify topic ID is correct (copy message link to check) |
+| `Error creating topic` | Bot needs admin + "Manage Topics" permission |
+| Rate limited | Script handles automatically; reduce volume if frequent |
+| Messages not in topic | Verify topic ID (copy message link to check) |
 
 ---
 
 ## 📌 Important Notes
 
-- **Rate limits** are handled automatically — the script waits and retries
-- **Session files** are stored in `sessions/` directory — don't delete them unless you want to re-login
-- **Topic forwarding caveat:** When forwarding to a specific topic, messages are sent as new messages (not forwarded) because Telegram's API doesn't support placing forwarded messages into topics. The "Forwarded from..." header won't appear in this case
-- **Privacy:** Be mindful of Telegram's Terms of Service and privacy laws
+- **Rate limits** handled automatically
+- **Session files** in `sessions/` — don't delete unless you want to re-login
+- **Topic forwarding caveat:** Messages sent to a specific topic use `send_message` (not `forward_messages`), so the "Forwarded from..." header won't appear
+- **Mirror topic matching** is by **name**, not numeric ID — rename topics carefully
 
 ---
 
