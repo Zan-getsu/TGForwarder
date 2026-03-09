@@ -350,6 +350,10 @@ class TelegramForwarder:
         if not self.sync_enabled:
             return
             
+        if self.bot_token:
+            logger.warning("Catch-up sync (SYNC_MISSED_MESSAGES) is not supported in Bot mode. Telegram restricts bots from fetching chat history. Skipping catch-up.")
+            return
+
         logger.info("Starting catch-up sync for missed messages...")
         
         for source_chat_id in self.source_chat_ids:

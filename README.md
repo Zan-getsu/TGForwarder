@@ -143,9 +143,9 @@ TARGET_ID=-1002222222222
 
 ## 🔄 Catch-up Sync (Missed Messages)
 
-If the bot goes offline or is restarted, it will normally only forward *new* messages that arrive after it starts listening. 
+> ⚠️ **IMPORTANT:** This feature is **ONLY supported in User Mode**. Telegram strictly prevents Bot accounts from fetching chat history.
 
-To catch up on messages you missed while offline:
+If the script goes offline, User accounts can catch up on missed messages:
 1. Set `SYNC_MISSED_MESSAGES=true` in `.env`
 2. The bot will save the ID of the last forwarded message to `sessions/sync_state.json`
 3. On startup, it will fetch all messages newer than that ID and forward them chronologically *before* it begins listening live.
@@ -175,10 +175,11 @@ To catch up on messages you missed while offline:
 
 ## 🤖 Bot Mode vs User Mode
 
-| | User Mode | Bot Mode |
+| Feature | User Mode | Bot Mode |
 |---|-----------|----------|
 | **Setup** | Leave `BOT_TOKEN` empty | Set `BOT_TOKEN` |
 | **Auth** | Phone + code + optional 2FA | Instant |
+| **History Sync** | ✅ Supported (`SYNC_MISSED_MESSAGES`) | ❌ Unusable (Telegram API refuses) |
 | **Access** | Any chat you're in | Only chats where bot is added |
 | **Session** | `sessions/user_session.session` | `sessions/bot_session.session` |
 
