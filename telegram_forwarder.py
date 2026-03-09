@@ -356,7 +356,8 @@ class TelegramForwarder:
     async def get_entity_info(self, entity_id, topic_id=None):
         """Get information about an entity (user, chat, or channel), optionally with topic."""
         try:
-            entity = await self.client.get_entity(entity_id)
+            client_to_use = self.user_client if self.user_client else self.client
+            entity = await client_to_use.get_entity(entity_id)
             if hasattr(entity, 'title'):
                 info = f"{entity.title} (ID: {entity_id})"
             elif hasattr(entity, 'first_name'):
