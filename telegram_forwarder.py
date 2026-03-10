@@ -724,7 +724,12 @@ class TelegramForwarder:
         async def restart_handler(event):
             """Handle the /restart command to restart the bot."""
             try:
-                await event.respond("Restarting...")
+                msg = await event.respond("Restarting...")
+                
+                # Save restart message info so we can edit it after restart
+                restart_info = {'chat_id': msg.chat_id, 'msg_id': msg.id}
+                with open('sessions/.restart_msg', 'w') as f:
+                    json.dump(restart_info, f)
                 
                 # Save state one last time before exiting
                 if self.sync_enabled:
@@ -986,6 +991,20 @@ class TelegramForwarder:
                 await db.save_session('user_session', StringSession.save(self.user_client.session))
                 
             await self.setup_forwarding()
+            
+            # Edit restart message if we just came back from a /restart
+            restart_file = 'sessions/.restart_msg'
+            if os.path.exists(restart_file):
+                try:
+                    with open(restart_file, 'r') as f:
+                        restart_info = json.load(f)
+                    await self.client.edit_message(
+                        restart_info['chat_id'], restart_info['msg_id'], 'Restarted ✅'
+                    )
+                except Exception as e:
+                    logger.debug(f"Could not edit restart message: {e}")
+                finally:
+                    os.remove(restart_file)
             
             # Catch up on any messages missed while offline
             await self.catch_up_missed_messages()
