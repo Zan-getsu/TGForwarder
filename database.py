@@ -42,7 +42,7 @@ class Database:
 
     async def get_settings(self):
         """Get all environment variables from DB"""
-        if not self.settings:
+        if self.settings is None:
             return {}
             
         settings = {}
@@ -53,7 +53,7 @@ class Database:
 
     async def update_setting(self, key, value):
         """Update a specific setting in DB"""
-        if not self.settings:
+        if self.settings is None:
             return
             
         await self.settings.update_one(
@@ -64,7 +64,7 @@ class Database:
 
     async def save_session(self, session_name, session_string):
         """Save a StringSession to DB"""
-        if not self.sessions:
+        if self.sessions is None:
             return
             
         await self.sessions.update_one(
@@ -75,7 +75,7 @@ class Database:
 
     async def get_session(self, session_name):
         """Retrieve a StringSession from DB"""
-        if not self.sessions:
+        if self.sessions is None:
             return None
             
         doc = await self.sessions.find_one({'_id': session_name})
@@ -83,7 +83,7 @@ class Database:
 
     async def get_sync_state(self):
         """Get the full sync state from DB"""
-        if not self.sync_state:
+        if self.sync_state is None:
             return {}
             
         state = {}
@@ -94,7 +94,7 @@ class Database:
 
     async def save_sync_state(self, state_dict):
         """Save the full sync state to DB"""
-        if not self.sync_state:
+        if self.sync_state is None:
             return
             
         operations = []
@@ -114,13 +114,13 @@ class Database:
 
     async def clear_sync_state(self):
         """Clear all stored sync states from DB"""
-        if not self.sync_state:
+        if self.sync_state is None:
             return
         await self.sync_state.delete_many({})
 
     async def clear_forwarding_rules(self):
         """Clear all stored source and target rules from DB"""
-        if not self.settings:
+        if self.settings is None:
             return
         await self.settings.delete_many({
             '$or': [
