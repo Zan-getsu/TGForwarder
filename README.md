@@ -1,291 +1,167 @@
-# Telegram Forwarder
+<div align="center">
+  <h1>🚀 Telegram Message Forwarder</h1>
+  <p><i>A powerful, real-time Telegram message router with interactive bot controls, database persistence, and dual-state architecture.</i></p>
+  
 
-Real-time Telegram message forwarder — listens to source chats and instantly forwards to one or more targets. Supports forum topics, catch-up sync, and both bot & user accounts.
+  [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+  [![Python](https://img.shields.io/badge/Python-3.12%2B-blueviolet)](https://www.python.org/)
+  [![Telethon](https://img.shields.io/badge/Powered%20By-Telethon-orange)](https://github.com/LonamiWebs/Telethon)
+</div>
 
 ---
 
-## ⚡ Quick Start (5 minutes)
+## ✨ Key Features
+- **Instant Forwarding**: Listens to source chats and forwards messages to targets with zero delay.
+- **Topics Support**: Fully supports Telegram forum topics routing natively.
+- **Dual Architecture**: Use a **Bot Access Token** for stability, and a **User Account Profile** to fetch historical missed messages!
+- **Interactive UI**: Change configurations, reboot, and pull logs using inline Telegram Bot menus.
+- **Cloud Configurations**: Upload `.env` or `rules.txt` straight to the bot, parsing directly to your MongoDB securely.
+- **In-App Login**: Generate User String Sessions without ever touching the console via `/sessiongen`.
 
-### 1. Get your credentials
+---
 
-| What | Where |
-|------|-------|
-| `API_ID` + `API_HASH` | [my.telegram.org](https://my.telegram.org) → API development tools |
-| `BOT_TOKEN` *(optional)* | [@BotFather](https://t.me/BotFather) on Telegram |
-| Chat IDs | [@userinfobot](https://t.me/userinfobot) or [@get_id_bot](https://t.me/get_id_bot) |
+## ⚡ Quick Start
 
-### 2. Clone & install
+### 1. Get your Telegram API Credentials
+| Requirement | Where to get it |
+|-------------|-----------------|
+| **`API_ID` & `API_HASH`** | [my.telegram.org](https://my.telegram.org/) → **API development tools** |
+| **`BOT_TOKEN`** *(optional)* | [@BotFather](https://t.me/BotFather) on Telegram |
+| **Chat IDs** | [@userinfobot](https://t.me/userinfobot) or [@get_id_bot](https://t.me/get_id_bot) |
 
+### 2. Clone & Install
 ```bash
 git clone https://github.com/Zan-getsu/TGForwarder.git
 cd TGForwarder
 pip install -r requirements.txt
-```
-
-### 3. Configure
-
-```bash
 cp .env.example .env
 ```
 
-Edit `.env` with your values:
-
+### 3. Configure your `.env`
+Edit `.env` with your values (or upload a `.env` straight to the bot later if using MongoDB!):
 ```env
 API_ID=12345678
 API_HASH=abcdef1234567890abcdef1234567890
-BOT_TOKEN=
+BOT_TOKEN=123456:ABC-DEF
 
 SOURCE_1=-1001111111111
 TARGET_1=-1002222222222
 ```
 
-### 4. Run
-
+### 4. Run the Script
 ```bash
 python telegram_forwarder.py
 ```
+*Your forwarder is now live and routing messages!*
 
-That's it. The forwarder is now listening and will forward every new message from source → target.
+---
 
-> **First run (user mode):** Run `python3 generate_session.py` to create a session file, then restart the script.
+## ⚙️ Interactive Bot & MongoDB Panel
+
+By adding a **`DATABASE_URL`** (MongoDB Connection String) to your `.env` file, the bot unlocks powerful, interactive features allowing you to manage the script directly from Telegram!
+
+- **Interactive Settings (`/bsetting`)**: Send `/bsetting` to the bot to open an inline keyboard menu. Toggle `Dual Mode`, `Catch-up Sync`, and `Signatures` directly from your chat!
+- **Dynamic File Uploads**: Upload a **`rules.txt`** file listing your `SOURCE_N=...` and `TARGET_N=...` routing rules privately to the bot. It will securely parse it, wipe old routing rules, and ingest the new ones straight into MongoDB! You can also upload `.env` files to override the `API_ID`.
+- **In-App Authentication (`/sessiongen`)**: Securely exchange your Phone Number, OTP, and 2FA password over an interactive Telegram conversation to instantly store a highly secure "User Session" directly into your database.
+- **Remote Process Control**: Use `/restart` to safely restart the python application remotely, or `/log` to receive the bot's `telegram_forwarder.log` file.
+
+---
+
+## 🔀 Configuring Forwarding Rules
+
+### The `rules.txt` or `.env` Format (Recommended)
+Set `SOURCE_N` and `TARGET_N` pairs. You can define these in your `.env` file or write them in a `rules.txt` file and upload it to the bot over Telegram!
+
+```env
+# Basic one-to-one mapping
+SOURCE_1=-1001111111111
+TARGET_1=-1002222222222
+
+# Forum Topics (Source Topic 5 → Target Topic 10)
+SOURCE_2=-1001111111111/5
+TARGET_2=-1003333333333/10
+
+# One-to-Many Routing
+SOURCE_3=-1004444444444
+TARGET_3=-1005555555555,-1006666666666
+```
+
+### Inline Commands
+You can also update rules instantly using the bot via:
+`/setrules -100111:-100222, -100333:-100444`
+
+---
+
+## 🤖 Account Execution Modes
+
+| Feature | User Mode | Bot Mode | Dual Mode |
+|---|-----------|----------|----------|
+| **Setup** | Leave `BOT_TOKEN` empty | Set `BOT_TOKEN` | Set `BOT_TOKEN` + User Session + `DUAL_MODE=true` |
+| **Authentication** | `/sessiongen` or Terminal | Instant API Token | API Token + User Session |
+| **Live Forwarding** | ✅ User account | ✅ Bot | ✅ Bot |
+| **History Catch-up Sync** | ✅ Supported | ❌ API Denied | ✅ User account fetches missing history |
+| **Monitored Chats** | Any chat you're in | Chats bot is invited to | Bot chats (Live) + User chats (Sync) |
+
+### 🔄 Catch-up Sync Details
+*(Only supported in User and Dual modes)*
+If the script goes offline, User accounts can catch up on missed messages. 
+1. Set `SYNC_MISSED_MESSAGES=true` in `.env` (or via `/bsetting`).
+2. The bot tracks the last forwarded message ID.
+3. On startup, it fetches **all messages newer than that ID** and forwards them chronologically *before* it begins listening live!
 
 ---
 
 ## 🐳 Docker Deployment
 
-### Using Docker Compose (recommended)
+The cleanest way to run the forwarder 24/7 is via Docker Compose:
 
 ```bash
-cp .env.example .env
-# edit .env with your values
-
-docker compose up -d        # build & run
-docker compose logs -f      # view logs
-docker compose down          # stop
+docker compose up -d        # build & run in background
+docker compose logs -f      # view live terminal logs
+docker compose down         # shutdown
 ```
 
-Session files are persisted in the `./sessions/` directory.
+**Authenticating User Sessions in Docker:**
+1. Text your bot **`/sessiongen`** on Telegram to authorize. (*Easiest*)
+2. Or use the terminal script: `docker compose run forwarder python3 generate_session.py`
+3. Or supply a raw `SESSION_STRING` in your `.env`.
 
-### Using Docker directly
+---
 
-```bash
-docker build -t tg-forwarder .
-docker run -d \
-  --name tg-forwarder \
-  --restart unless-stopped \
-  --env-file .env \
-  -v ./sessions:/app/sessions \
-  tg-forwarder
-```
+## 📌 Finding Chat and Topic IDs
 
-### User Mode Authentication (for Docker)
+- **Private Users**: Positive number (`123456789`)
+- **Groups/Channels**: Starts with `-100` (`-1001234567890`)
+- **Find IDs**: Forward a message to [@userinfobot](https://t.me/userinfobot) or [@RawDataBot](https://t.me/RawDataBot).
+- **Topic IDs**: Right-click a message in a topic -> Copy Link -> The middle number is the Topic ID (`t.me/c/CHANNEL_ID/TOPIC_ID/MSG_ID`). General topics are always ID `1`.
 
-**Option 1: Quick script (Linux/Mac)**
+---
 
-```bash
-chmod +x session.sh
-./session.sh
-```
+## 💬 BotFather Menu Settings Template
 
-This will install dependencies and generate the session file automatically.
+To easily configure your bot's command menu layout, go to [@BotFather](https://t.me/BotFather), send `/setcommands`, select your bot, and copy/paste this block:
 
-**Option 2: Python script**
-
-```bash
-python3 generate_session.py
-```
-
-Follow the prompts (phone → code → 2FA). The session file will be saved to `sessions/user_session.session`.
-
-With docker-compose (using `./sessions:/app/sessions` volume), the session is automatically available to the container. Just restart:
-
-```bash
-docker compose up -d
-```
-
-**Option 3: Interactive container (first run only)**
-
-```bash
-docker compose run forwarder
-# Complete the phone/code/2FA prompts
-# Then restart normally: docker compose up -d
+```text
+status - To check Bot Status and Uptime. [ADMIN]
+log - To get the bot's log file. [ADMIN]
+restart - To restart the bot process safely. [ADMIN]
+bsetting - To open the bot settings menu. [ADMIN]
+setrules - To update live forwarding rules. [ADMIN]
+sessiongen - To interactively generate a user session. [ADMIN]
 ```
 
 ---
 
-## 📋 Environment Variables
+## ⚠️ Troubleshooting & Notes
 
-| Variable | Required | Description |
-|----------|:--------:|-------------|
-| `API_ID` | ✅ | Telegram API ID |
-| `API_HASH` | ✅ | Telegram API Hash |
-| `BOT_TOKEN` | ❌ | Bot token (leave empty for user mode) |
-| `SESSION_STRING` | ❌ | Session string for user mode (alternative to interactive auth) |
-| `REMOVE_FORWARD_SIGNATURE` | ❌ | `true` = send clean copies without "Forwarded from..." header |
-| `DISABLE_CONSOLE_LOG` | ❌ | `true` = log only to file, no console output |
-| `SYNC_MISSED_MESSAGES` | ❌ | `true` = catch up on messages missed while bot was offline |
-| `DUAL_MODE` | ❌ | `true` = bot for live forwarding + user account for catch-up sync |
+- **`Missing API_ID`**: Double check your `.env` file or MongoDB database parameters.
+- **`Rate Limited`**: The script handles Telegram flood waits automatically. Do not panic if the script pauses briefly.
+- **No Forward Header**: Messages sent directly to a *specific topic* cannot use Telegram's native `forward_messages` API, so they are cleanly cloned instead, omitting the "Forwarded from..." header.
+- **`Error getting entity info`**: Ensure your bot (or user account) is actually a member of the chat ID configured!
 
+<br>
 
-> CLI flags `-r` and `-q` still work and override the env vars.
-
----
-
-## 🔀 Forwarding Rules
-
-### Numbered Pairs (recommended)
-
-The simplest way to configure forwarding. Set `SOURCE_N` and `TARGET_N` pairs:
-
-```env
-# Rule 1: one-to-one
-SOURCE_1=-1001111111111
-TARGET_1=-1002222222222
-
-# Rule 2: with forum topics (source topic 5 → target topic 10)
-SOURCE_2=-1001111111111/5
-TARGET_2=-1003333333333/10
-
-# Rule 3: one-to-many (comma-separated targets)
-SOURCE_3=-1004444444444
-TARGET_3=-1005555555555,-1006666666666
-
-# Rule 4: topic to multiple target topics
-SOURCE_4=-1001111111111/5
-TARGET_4=-1002222222222/10,-1003333333333/15
-```
-
-### Compact Format (still supported)
-
-Comma separates **rules**, colon separates **source:target(s)** within a rule:
-
-```env
-# Two separate rules
-FORWARDING_RULES=-1001111111111:-1002222222222,-1003333333333:-1004444444444
-
-# One-to-many (single rule with multiple targets)
-FORWARDING_RULES=-1001111111111:-1002222222222:-1003333333333
-```
-
-Format: `source[/topic]:target1[/topic][:target2[/topic]], next_source:next_target`
-
-### Legacy Format (still supported)
-
-```env
-SOURCE_ID=-1001111111111
-TARGET_ID=-1002222222222
-```
-
----
-
-
-
-## 🔄 Catch-up Sync (Missed Messages)
-
-> ⚠️ **IMPORTANT:** This feature is **ONLY supported in User Mode**. Telegram strictly prevents Bot accounts from fetching chat history.
-
-If the script goes offline, User accounts can catch up on missed messages:
-1. Set `SYNC_MISSED_MESSAGES=true` in `.env`
-2. The bot will save the ID of the last forwarded message to `sessions/sync_state.json`
-3. On startup, it will fetch all messages newer than that ID and forward them chronologically *before* it begins listening live.
-
-*Note: On its very first run, it will sync the entire history of the chat from the very beginning. Be aware that this may take time for large groups.*
-
----
-
-## 🔍 Finding IDs
-
-### Chat IDs
-
-| Chat Type | Format | Example |
-|-----------|--------|---------|
-| Private user | Positive number | `123456789` |
-| Group / Channel | `-100` + ID | `-1001234567890` |
-
-**Tools:** [@userinfobot](https://t.me/userinfobot), [@get_id_bot](https://t.me/get_id_bot), [@RawDataBot](https://t.me/RawDataBot)
-
-### Topic IDs
-
-- **Message link:** Right-click message → Copy Link → `https://t.me/c/CHANNEL_ID/TOPIC_ID/MESSAGE_ID`
-- **General topic:** Always ID `1`
-- **Bot:** [@raw_info_bot](https://t.me/raw_info_bot)
-
----
-
-## 🤖 Bot Mode vs User Mode vs Dual Mode
-
-| Feature | User Mode | Bot Mode | Dual Mode |
-|---|-----------|----------|----------|
-| **Setup** | Leave `BOT_TOKEN` empty | Set `BOT_TOKEN` | Set `BOT_TOKEN` + user session + `DUAL_MODE=true` |
-| **Auth** | Phone + code + 2FA | Instant | Bot token + user session |
-| **Live Forwarding** | ✅ User account | ✅ Bot | ✅ Bot |
-| **History Sync** | ✅ Supported | ❌ Unusable (Telegram API refuses) | ✅ User account handles sync |
-| **Access** | Any chat you're in | Only chats where bot is added | Bot chats (live) + user chats (sync) |
-
-### 🔀 Dual Mode
-
-Dual mode gives you the best of both worlds:
-- **Bot** handles real‑time forwarding (faster, less rate‑limited)
-- **User account** handles catch‑up sync (bots can't fetch history)
-
-```env
-BOT_TOKEN=123456:ABC-DEF
-SESSION_STRING=your_session_string_here
-DUAL_MODE=true
-SYNC_MISSED_MESSAGES=true
-```
-
-When `DUAL_MODE=false` (default), the forwarder uses whichever single mode is configured — no behavior change.
-
----
-
-## 📊 Status Command
-
-You can check whether the forwarder is active and running properly by sending `/status` directly to your bot (or in any monitored group).
-
-The bot will reply with a beautifully formatted message that **updates in real-time** every 5 seconds (for 5 minutes) showing:
-- **Status:** Active 🟢
-- **Mode:** (Bot / User / Dual)
-- **Uptime:** Time since the script started
-- **Forwarded:** Total messages processed successfully
-- **Tracking:** Number of source chats being monitored
-
----
-
-## 📝 Logging
-
-| Mode | Console | File |
-|------|:-------:|:----:|
-| Default | ✅ | ✅ |
-| `DISABLE_CONSOLE_LOG=true` | ❌ | ✅ |
-
----
-
-## ⚠️ Troubleshooting
-
-| Problem | Solution |
-|---------|----------|
-| `Missing API_ID or API_HASH` | Check `.env` file |
-| `No forwarding rules configured` | Set `SOURCE_N`/`TARGET_N` or `FORWARDING_RULES` |
-| Rate limited | Script handles automatically; reduce volume if frequent |
-| Messages not in topic | Verify topic ID (copy message link to check) |
-| `Error getting entity info` | Account/bot doesn't have access to that chat |
-
----
-
-## 📌 Important Notes
-
-- **Rate limits** handled automatically
-- **Session files** in `sessions/` — don't delete unless you want to re-login
-- **Topic forwarding caveat:** Messages sent to a specific topic use `send_message` (not `forward_messages`), so the "Forwarded from..." header won't appear
-
-
----
-
-## License
-
-[GNU General Public License v3.0](./LICENSE)
-
-## Disclaimer
-
-This tool is for educational and personal use. Please respect Telegram's Terms of Service and applicable laws regarding message forwarding and privacy.
+<div align="center">
+  <i>This tool is for educational and personal use. Please respect Telegram's Terms of Service regarding user privacy.</i><br>
+  <a href="./LICENSE">GNU General Public License v3.0</a>
+</div>

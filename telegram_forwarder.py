@@ -3,15 +3,13 @@ import logging
 import os
 import json
 import argparse
-import os
-import json
 import time
-import argparse
 from datetime import timedelta
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import SessionPasswordNeededError, FloodWaitError
+from database import db
 
 # Load environment variables
 load_dotenv()
@@ -71,13 +69,14 @@ class TelegramForwarder:
         # State: {chat_id: last_message_id} -> global message ID per chat
         self.sync_state = {}
 
-        # Validate required environment variables
-        if not all([self.api_id, self.api_hash]):
-            raise ValueError("Missing API_ID or API_HASH. Check your .env file.")
+        # Validate required environment variables - defer to run() as they might be in DB
+        # We'll check again after DB loads
+        self.db_ready = False
 
         # Status tracking
         self.start_time = time.time()
         self.total_forwarded = 0
+        self.active_logins = set()
 
         # Validate dual mode requirements
         if self.dual_mode:
@@ -91,20 +90,12 @@ class TelegramForwarder:
                 if not os.path.exists('sessions/user_session.session'):
                     raise ValueError(
                         "DUAL_MODE requires a user session. "
-                        "Set SESSION_STRING or run 'python generate_session.py' first."
+                        "Set SESSION_STRING or use '/sessiongen' from the bot first."
                     )
 
-        # Parse forwarding configuration
-        # forwarding_map: {(source_chat_id, source_topic_id|None): [(target_chat_id, target_topic_id|None), ...]}
+        # Parse forwarding configuration (might be empty initially, populated by DB later)
         self.forwarding_map = {}
-
         self._parse_all_rules()
-
-        if not self.forwarding_map:
-            raise ValueError(
-                "No forwarding rules configured. "
-                "Set SOURCE_N/TARGET_N, FORWARDING_RULES, or SOURCE_ID/TARGET_ID."
-            )
 
         # Extract unique source chat IDs for event registration
         source_from_rules = {src_chat for src_chat, _ in self.forwarding_map.keys()}
@@ -113,34 +104,107 @@ class TelegramForwarder:
         # Ensure session directory exists
         os.makedirs('sessions', exist_ok=True)
 
-        # Load sync state if enabled
-        if self.sync_enabled:
-            self._load_state()
+    async def setup_database(self):
+        """Initialize database connection and sync environment variables."""
+        if await db.connect():
+            # If DB connected, migrate `.env` to DB and load values from DB
+            db_settings = await db.get_settings()
+            
+            # 1. Update DB with any keys present in .env
+            keys_to_sync = ['API_ID', 'API_HASH', 'BOT_TOKEN', 'SESSION_STRING', 
+                            'REMOVE_FORWARD_SIGNATURE', 'DUAL_MODE', 'SYNC_MISSED_MESSAGES', 
+                            'DISABLE_CONSOLE_LOG', 'FORWARDING_RULES']
+                            
+            for key in keys_to_sync:
+                env_val = os.getenv(key)
+                if env_val is not None:
+                    await db.update_setting(key, env_val)
+                    db_settings[key] = env_val
 
-        # Initialize Telegram client(s)
+            # Find dynamic SOURCE_N/TARGET_N keys in env and save to DB
+            for key, val in os.environ.items():
+                if key.startswith('SOURCE_') or key.startswith('TARGET_'):
+                    await db.update_setting(key, val)
+                    db_settings[key] = val
+            
+            # 2. Overwrite local ENV values with what's in DB 
+            # (Allows dynamic updates to take effect next time without touching .env file)
+            for k, v in db_settings.items():
+                os.environ[k] = str(v)
+                
+            # Re-read configurations from environ now that it's populated from DB
+            self.api_id = os.getenv('API_ID')
+            self.api_hash = os.getenv('API_HASH')
+            self.bot_token = os.getenv('BOT_TOKEN', '').strip() or None
+            self.session_string = os.getenv('SESSION_STRING', '').strip() or None
+            self.remove_forward_signature = _env_bool('REMOVE_FORWARD_SIGNATURE')
+            self.dual_mode = _env_bool('DUAL_MODE')
+            self.sync_enabled = _env_bool('SYNC_MISSED_MESSAGES')
+            
+            # Post-DB load validation
+            if not self.api_id or not self.api_hash:
+                raise ValueError("Missing API_ID or API_HASH even after checking database. Please set them.")
+            
+            # Ensure api_id is an integer
+            try:
+                self.api_id = int(self.api_id)
+            except (ValueError, TypeError):
+                raise ValueError(f"API_ID must be a valid integer, got: {self.api_id}")
+            
+            # Reparse forwarding rules
+            self.forwarding_map = {}
+            self._parse_all_rules()
+            self.source_chat_ids = list({src_chat for src_chat, _ in self.forwarding_map.keys()})
+
+        # Post-DB load validation for rules
+        if not self.forwarding_map:
+            raise ValueError(
+                "No forwarding rules configured. "
+                "Set SOURCE_N/TARGET_N, FORWARDING_RULES, or SOURCE_ID/TARGET_ID."
+            )
+
+    async def initialize_clients(self):
+        """Initialize Telegram client(s) with DB sessions if possible."""
         self.user_client = None
 
+        bot_session = None
+        user_session = None
+        
+        # Only try to fetch from DB if collections are initialized
+        if db.sessions is not None:
+            bot_session = await db.get_session('bot_session') if self.bot_token else None
+            user_session = await db.get_session('user_session')
+
+        # Calculate session parameters
+        bot_session_arg = StringSession(bot_session) if bot_session else 'sessions/bot_session'
+        
+        if user_session:
+            user_session_arg = StringSession(user_session)
+        elif self.session_string:
+            user_session_arg = StringSession(self.session_string)
+        else:
+            user_session_arg = 'sessions/user_session'
+
+        # Ensure api_id is int for TelegramClient
+        api_id = int(self.api_id)
+
+        # Initialize clients appropriately based on active mode
         if self.dual_mode:
             # Dual mode: bot client for live events, user client for sync
-            self.client = TelegramClient('sessions/bot_session', self.api_id, self.api_hash)
-            if self.session_string:
-                self.user_client = TelegramClient(
-                    StringSession(self.session_string), self.api_id, self.api_hash
-                )
-            else:
-                self.user_client = TelegramClient('sessions/user_session', self.api_id, self.api_hash)
+            self.client = TelegramClient(bot_session_arg, api_id, self.api_hash)
+            self.user_client = TelegramClient(user_session_arg, api_id, self.api_hash)
             logger.info("Initialized in DUAL mode (bot + user)")
         elif self.bot_token:
-            self.client = TelegramClient('sessions/bot_session', self.api_id, self.api_hash)
+            # Single mode: standard bot
+            self.client = TelegramClient(bot_session_arg, api_id, self.api_hash)
             logger.info("Initialized in bot mode")
-        elif self.session_string:
-            self.client = TelegramClient(
-                StringSession(self.session_string), self.api_id, self.api_hash
-            )
-            logger.info("Initialized in user mode (session string)")
         else:
-            self.client = TelegramClient('sessions/user_session', self.api_id, self.api_hash)
-            logger.info("Initialized in user mode (interactive auth required)")
+            # Single mode: standard user
+            self.client = TelegramClient(user_session_arg, api_id, self.api_hash)
+            if self.session_string or user_session:
+                logger.info("Initialized in user mode (session string/DB loaded)")
+            else:
+                logger.info("Initialized in user mode (interactive auth required)")
 
     # ─── Parsing helpers ───────────────────────────────────────
 
@@ -165,11 +229,15 @@ class TelegramForwarder:
     def _parse_numbered_pairs(self):
         """Parse SOURCE_N / TARGET_N environment variable pairs."""
         n = 1
-        while True:
+        consecutive_misses = 0
+        while consecutive_misses < 10:
             source_env = os.getenv(f'SOURCE_{n}')
             target_env = os.getenv(f'TARGET_{n}')
             if source_env is None and target_env is None:
-                break
+                consecutive_misses += 1
+                n += 1
+                continue
+            consecutive_misses = 0
             if source_env and target_env:
                 try:
                     source_key = self._parse_id_topic(source_env)
@@ -229,8 +297,17 @@ class TelegramForwarder:
 
     # ─── State Management (Sync Feature) ───────────────────────
 
-    def _load_state(self):
-        """Load the sync state from JSON file."""
+    async def _load_state(self):
+        """Load the sync state from DB or JSON file."""
+        if db.sync_state is not None:
+            self.sync_state = await db.get_sync_state()
+            if self.sync_state:
+                # Convert keys back to int
+                self.sync_state = {int(k): v for k, v in self.sync_state.items()}
+                logger.info(f"Loaded sync state from DB for {len(self.sync_state)} source chats")
+                return
+
+        # Fallback to JSON file
         if not os.path.exists(self.state_file):
             self.sync_state = {}
             logger.info("No existing sync state found. Starting fresh.")
@@ -242,35 +319,39 @@ class TelegramForwarder:
             
             self.sync_state = {}
             for key_str, last_id in raw_state.items():
-                # Handle old format ("chat_id:topic_id") migration
                 if ':' in key_str:
                     chat_str = key_str.split(':')[0]
                 else:
                     chat_str = key_str
                 
                 chat_id = int(chat_str)
-                # Keep the absolute highest message ID for this chat
                 self.sync_state[chat_id] = max(self.sync_state.get(chat_id, 0), last_id)
                 
-            logger.info(f"Loaded sync state for {len(self.sync_state)} source chats")
+            logger.info(f"Loaded sync state from file for {len(self.sync_state)} source chats")
         except Exception as e:
             logger.error(f"Error loading sync state: {e}")
             self.sync_state = {}
 
-    def _save_state(self):
-        """Save the sync state to JSON file."""
+    async def _save_state(self):
+        """Save the sync state to DB and JSON file."""
         if not self.sync_enabled:
             return
             
         try:
             # Convert keys to strings: chat_id -> "chat_id"
             raw_state = {str(chat_id): last_id for chat_id, last_id in self.sync_state.items()}
+            
+            # Save to DB if connected
+            if db.sync_state is not None:
+                await db.save_sync_state(raw_state)
+                
+            # Fallback/redundant save to JSON
             with open(self.state_file, 'w') as f:
                 json.dump(raw_state, f, indent=2)
         except Exception as e:
             logger.error(f"Error saving sync state: {e}")
 
-    def _update_last_id(self, source_chat_id, message_id, save=True):
+    async def _update_last_id(self, source_chat_id, message_id, save=True):
         """Update the last forwarded message ID and optionally save state."""
         if not self.sync_enabled:
             return
@@ -281,7 +362,7 @@ class TelegramForwarder:
         if message_id > current_last:
             self.sync_state[source_chat_id] = message_id
             if save:
-                self._save_state()
+                await self._save_state()
 
     # ─── Client & entity helpers ───────────────────────────────
 
@@ -310,17 +391,6 @@ class TelegramForwarder:
         else:
             logger.info("Client started successfully")
 
-        # Start the user client if in dual mode
-        if self.user_client:
-            if self.session_string:
-                # StringSession was already passed to TelegramClient constructor
-                await self.user_client.start()
-            else:
-                await self.user_client.start()
-                if not await self.user_client.is_user_authorized():
-                    phone = input("Enter your phone number (for user client): ")
-                    await self.user_client.send_code_request(phone)
-                    code = input("Enter the code you received: ")
         # Start the user client if in dual mode
         if self.user_client:
             if self.session_string:
@@ -538,18 +608,18 @@ class TelegramForwarder:
                     await self._process_message(msg, source_chat_id, sender_id)
 
                     # Track message ID but defer disk write (batch save)
-                    self._update_last_id(source_chat_id, msg.id, save=False)
+                    await self._update_last_id(source_chat_id, msg.id, save=False)
                     count += 1
 
                     # Periodic save every 50 messages
                     if count % 50 == 0:
-                        self._save_state()
+                        await self._save_state()
 
                     # Anti-flood delay to prevent SendMediaRequest / flood waits during mass catch-up
                     await asyncio.sleep(2.0)
 
                 # Final save after processing all messages for this chat
-                self._save_state()
+                await self._save_state()
 
                 if count > 0:
                     logger.info(f"Caught up with {count} missed messages in {source_info}")
@@ -558,11 +628,11 @@ class TelegramForwarder:
 
             except FloodWaitError as e:
                 logger.warning(f"Rate limited during sync. Waiting {e.seconds} seconds...")
-                self._save_state()
+                await self._save_state()
                 await asyncio.sleep(e.seconds)
             except Exception as e:
                 logger.error(f"Error catching up on {source_chat_id}: {e}")
-                self._save_state()
+                await self._save_state()
 
         logger.info("Catch-up sync complete.")
 
@@ -621,7 +691,7 @@ class TelegramForwarder:
                 await self._process_message(message, source_chat_id, sender_id)
                 
                 # Track that we've seen this message ID via live events
-                self._update_last_id(source_chat_id, message.id)
+                await self._update_last_id(source_chat_id, message.id)
 
             except FloodWaitError as e:
                 logger.warning(f"Rate limited. Waiting {e.seconds} seconds...")
@@ -639,12 +709,282 @@ class TelegramForwarder:
             except Exception as e:
                 logger.error(f"Error in status handler: {e}")
 
+        @self.client.on(events.NewMessage(pattern=r'(?i)^/log(?:@[a-zA-Z0-9_]+)?$'))
+        async def log_handler(event):
+            """Handle the /log command to send the log file."""
+            try:
+                if os.path.exists('telegram_forwarder.log'):
+                    await event.respond("Here is the log file:", file='telegram_forwarder.log')
+                else:
+                    await event.respond("Log file not found.")
+            except Exception as e:
+                logger.error(f"Error sending log file: {e}")
+
+        @self.client.on(events.NewMessage(pattern=r'(?i)^/restart(?:@[a-zA-Z0-9_]+)?$'))
+        async def restart_handler(event):
+            """Handle the /restart command to restart the bot."""
+            try:
+                await event.respond("Restarting...")
+                
+                # Save state one last time before exiting
+                if self.sync_enabled:
+                    await self._save_state()
+                    
+                import sys
+                os.execl(sys.executable, sys.executable, *sys.argv)
+            except Exception as e:
+                logger.error(f"Error restarting bot: {e}")
+
+        @self.client.on(events.NewMessage(pattern=r'(?i)^/bsetting(?:@[a-zA-Z0-9_]+)?$'))
+        async def bsetting_handler(event):
+            """Handle the /bsetting command to edit environment variables."""
+            from telethon import Button
+            try:
+                buttons = [
+                    [Button.inline("Sync Missed Messages", data="toggle_sync")],
+                    [Button.inline("Dual Mode", data="toggle_dual")],
+                    [Button.inline("Remove FRW Signature", data="toggle_fw_sig")],
+                    [Button.inline("Edit Forwarding Rules", data="edit_fw_rules")],
+                    [Button.inline("Clear DB Sync State", data="clear_sync")],
+                    [Button.inline("Close", data="close_settings")]
+                ]
+                text = (
+                    "⚙️ **Bot Settings**\n\n"
+                    f"**Sync Missed Messages:** `{'Enabled 🟢' if self.sync_enabled else 'Disabled 🔴'}`\n"
+                    f"**Dual Mode:** `{'Enabled 🟢' if self.dual_mode else 'Disabled 🔴'}`\n"
+                    f"**Remove Signature:** `{'Enabled 🟢' if self.remove_forward_signature else 'Disabled 🔴'}`\n"
+                    f"**Forwarding Rules Source Count:** `{len(self.source_chat_ids)}`\n"
+                    f"**Persisted Sync States:** `{len(self.sync_state)}` chats\n"
+                )
+                await event.respond(text, buttons=buttons)
+            except Exception as e:
+                logger.error(f"Error in bsetting command: {e}")
+
+        @self.client.on(events.CallbackQuery())
+        async def callback_handler(event):
+            """Handle inline button callbacks for /bsetting."""
+            try:
+                data = event.data.decode('utf-8')
+                
+                if data == "close_settings":
+                    await event.delete()
+                    return
+                    
+                modified = False
+                
+                if data == "toggle_sync":
+                    self.sync_enabled = not self.sync_enabled
+                    await db.update_setting('SYNC_MISSED_MESSAGES', str(self.sync_enabled).lower())
+                    os.environ['SYNC_MISSED_MESSAGES'] = str(self.sync_enabled).lower()
+                    modified = True
+                
+                elif data == "toggle_dual":
+                    self.dual_mode = not self.dual_mode
+                    await db.update_setting('DUAL_MODE', str(self.dual_mode).lower())
+                    os.environ['DUAL_MODE'] = str(self.dual_mode).lower()
+                    modified = True
+                    
+                elif data == "toggle_fw_sig":
+                    self.remove_forward_signature = not self.remove_forward_signature
+                    await db.update_setting('REMOVE_FORWARD_SIGNATURE', str(self.remove_forward_signature).lower())
+                    os.environ['REMOVE_FORWARD_SIGNATURE'] = str(self.remove_forward_signature).lower()
+                    modified = True
+                    
+                elif data == "edit_fw_rules":
+                    await event.answer("To configure complex rules, send a file named 'rules.txt' or '.env' to the bot with KEY=VALUE pairs.", alert=True)
+                    return
+                    
+                elif data == "clear_sync":
+                    # Delete the file, clear DB, and clear memory state
+                    await db.clear_sync_state()
+                    self.sync_state = {}
+                    if os.path.exists(self.state_file):
+                        try:
+                            os.remove(self.state_file)
+                        except Exception as e:
+                            logger.error(f"Failed to delete {self.state_file}: {e}")
+                    await event.answer("Sync state cleared successfully!", alert=True)
+                    modified = True
+                
+                if modified:
+                    from telethon import Button
+                    buttons = [
+                        [Button.inline("Sync Missed Messages", data="toggle_sync")],
+                        [Button.inline("Dual Mode", data="toggle_dual")],
+                        [Button.inline("Remove FRW Signature", data="toggle_fw_sig")],
+                        [Button.inline("Edit Forwarding Rules", data="edit_fw_rules")],
+                        [Button.inline("Clear DB Sync State", data="clear_sync")],
+                        [Button.inline("Close", data="close_settings")]
+                    ]
+                    text = (
+                        "⚙️ **Bot Settings**\n\n"
+                        f"**Sync Missed Messages:** `{'Enabled 🟢' if self.sync_enabled else 'Disabled 🔴'}`\n"
+                        f"**Dual Mode:** `{'Enabled 🟢' if self.dual_mode else 'Disabled 🔴'}`\n"
+                        f"**Remove Signature:** `{'Enabled 🟢' if self.remove_forward_signature else 'Disabled 🔴'}`\n"
+                        f"**Forwarding Rules Source Count:** `{len(self.source_chat_ids)}`\n"
+                        f"**Persisted Sync States:** `{len(self.sync_state)}` chats\n\n"
+                        "*(Note: Some settings require a /restart to take full effect)*"
+                    )
+                    await event.edit(text, buttons=buttons)
+                    
+            except Exception as e:
+                logger.error(f"Error handling callback: {e}")
+
+        @self.client.on(events.NewMessage(pattern=r'(?i)^/setrules (.+)$'))
+        async def setrules_handler(event):
+            """Handle the /setrules command to update FORWARDING_RULES."""
+            try:
+                rules_str = event.pattern_match.group(1).strip()
+                await db.update_setting('FORWARDING_RULES', rules_str)
+                os.environ['FORWARDING_RULES'] = rules_str
+                
+                # Re-parse rules
+                self.forwarding_map = {}
+                self._parse_all_rules()
+                self.source_chat_ids = list({src_chat for src_chat, _ in self.forwarding_map.keys()})
+                
+                await event.respond(f"✅ Forwarding Rules updated to `{rules_str}`.\n\nPlease /restart the bot for changes to take effect.")
+            except Exception as e:
+                logger.error(f"Error updating rules: {e}")
+                await event.respond("❌ Failed to parse or save forwarding rules.")
+
+        @self.client.on(events.NewMessage(pattern=r'(?i)^/sessiongen(?:@[a-zA-Z0-9_]+)?$'))
+        async def sessiongen_handler(event):
+            """Handle the /sessiongen command to generate and save a new user session."""
+            sender_id = event.sender_id
+            
+            if sender_id in self.active_logins:
+                await event.respond("You are already in an active login process. Please finish it or wait for timeout.")
+                return
+                
+            self.active_logins.add(sender_id)
+            
+            async with self.client.conversation(event.chat_id, timeout=120) as conv:
+                temp_client = None
+                try:
+                    await conv.send_message("📞 **User Support Login**\n\nPlease send your Telegram phone number in international format (e.g., `+1234567890`).")
+                    phone_msg = await conv.get_response()
+                    phone = phone_msg.text.strip()
+                    
+                    if not phone.startswith('+'):
+                        await conv.send_message("❌ Invalid phone format. It must start with a '+'. Session generation aborted.")
+                        return
+
+                    await conv.send_message(f"Connecting to Telegram servers for {phone}...")
+                    
+                    # Create temporary client
+                    temp_client = TelegramClient(StringSession(), self.api_id, self.api_hash)
+                    await temp_client.connect()
+                    
+                    # Request code
+                    sent_code = await temp_client.send_code_request(phone)
+                    
+                    await conv.send_message("✅ Code sent! Please enter the Telegram verification code you received:")
+                    code_msg = await conv.get_response()
+                    code = code_msg.text.strip()
+                    
+                    try:
+                        await temp_client.sign_in(phone, code, phone_code_hash=sent_code.phone_code_hash)
+                    except SessionPasswordNeededError:
+                        await conv.send_message("🔒 Two-step verification is enabled on this account. Please enter your 2FA password:")
+                        pass_msg = await conv.get_response()
+                        password = pass_msg.text.strip()
+                        # Delete user password message for security
+                        try:
+                            await pass_msg.delete()
+                        except:
+                            pass
+                            
+                        await temp_client.sign_in(password=password)
+                        
+                    # Success
+                    session_string = StringSession.save(temp_client.session)
+                    
+                    # Save into database
+                    await db.save_session('user_session', session_string)
+                    # Update active os var in case of soft reload
+                    os.environ['SESSION_STRING'] = session_string
+                    await db.update_setting('SESSION_STRING', session_string)
+                    
+                    await conv.send_message(
+                        "🎉 **Login Successful!**\n\n"
+                        "Your user session has been saved directly to the encrypted MongoDB database.\n"
+                        "Please run `/restart` to reload the bot with your new user privileges configured!"
+                    )
+                    
+                except asyncio.TimeoutError:
+                    await conv.send_message("❌ Session generation timed out. Please run `/sessiongen` again.")
+                except Exception as e:
+                    logger.error(f"Error during interactive session generation: {e}")
+                    await conv.send_message(f"❌ An error occurred during session generation:\n`{e}`")
+                finally:
+                    if temp_client:
+                        await temp_client.disconnect()
+                    self.active_logins.discard(sender_id)
+
+        @self.client.on(events.NewMessage(func=lambda e: e.document and getattr(e.file, 'name', '') in ('rules.txt', '.env')))
+        async def env_file_handler(event):
+            """Handle uploaded rules.txt or .env files to update database settings."""
+            try:
+                msg = await event.respond(f"📥 Downloading and parsing `{event.file.name}`...")
+                temp_path = await event.client.download_media(event.message, file=f"temp_{event.file.name}")
+                
+                updated_keys = 0
+                
+                # If it's explicitly rules.txt, clear old rules to ensure clean slate
+                if getattr(event.file, 'name', '') == 'rules.txt':
+                    await db.clear_forwarding_rules()
+                    keys_to_delete = [k for k in os.environ.keys() if k.startswith('SOURCE_') or k.startswith('TARGET_') or k == 'FORWARDING_RULES']
+                    for k in keys_to_delete:
+                        del os.environ[k]
+                
+                with open(temp_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith('#'):
+                            continue
+                        if '=' in line:
+                            key, val = line.split('=', 1)
+                            key = key.strip()
+                            val = val.strip()
+                            await db.update_setting(key, val)
+                            os.environ[key] = val
+                            updated_keys += 1
+                
+                os.remove(temp_path)
+                
+                # Re-parse rules
+                self.forwarding_map = {}
+                self._parse_all_rules()
+                self.source_chat_ids = list({src_chat for src_chat, _ in self.forwarding_map.keys()})
+                
+                await msg.edit(f"✅ Successfully updated {updated_keys} configuration variables from `{event.file.name}`.\n\nPlease /restart the bot for changes to take effect.")
+            except Exception as e:
+                logger.error(f"Error processing document: {e}")
+                await event.respond(f"❌ Failed to process configuration file: {e}")
+
         logger.info("Message forwarding and command handlers registered successfully")
 
     async def run(self):
         """Main method to run the forwarder."""
         try:
+            await self.setup_database()
+            await self.initialize_clients()
+            
+            if self.sync_enabled:
+                await self._load_state()
+
             await self.start_client()
+            
+            # Save our own sessions to DB so docker rebuilds don't lose login
+            if self.client and hasattr(self.client.session, 'save'):
+                await db.save_session(
+                    'bot_session' if self.bot_token else 'user_session', 
+                    StringSession.save(self.client.session)
+                )
+            if self.user_client and hasattr(self.user_client.session, 'save'):
+                await db.save_session('user_session', StringSession.save(self.user_client.session))
+                
             await self.setup_forwarding()
             
             # Catch up on any messages missed while offline
@@ -658,12 +998,13 @@ class TelegramForwarder:
         finally:
             # Save state before exiting
             if self.sync_enabled:
-                self._save_state()
-            await self.client.disconnect()
-            if self.user_client:
+                await self._save_state()
+            if hasattr(self, 'client') and self.client:
+                await self.client.disconnect()
+                logger.info("Client disconnected")
+            if hasattr(self, 'user_client') and self.user_client:
                 await self.user_client.disconnect()
                 logger.info("User client disconnected")
-            logger.info("Client disconnected")
 
 
 async def main():
