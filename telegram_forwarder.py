@@ -395,6 +395,20 @@ class TelegramForwarder:
         targets = self.forwarding_map.get((source_chat_id, msg_topic_id))
         if targets:
             return targets
+            
+        # General topic is often mapped as topic 1. If message has no specific topic (None),
+        # try seeing if the user configured topic 1.
+        if msg_topic_id is None:
+            targets = self.forwarding_map.get((source_chat_id, 1))
+            if targets:
+                return targets
+                
+        # Conversely, if we detected topic 1, the user might have used a wildcard (None).
+        if msg_topic_id == 1:
+            targets = self.forwarding_map.get((source_chat_id, None))
+            if targets:
+                return targets
+
         # Fall back to wildcard (no topic filter)
         return self.forwarding_map.get((source_chat_id, None), [])
 
@@ -423,9 +437,13 @@ class TelegramForwarder:
         # Try to resolve the entity explicitly, especially helpful for bot clients
         resolved_target = await self._resolve_entity(target_chat)
 
-        if self.remove_forward_signature or target_topic is not None:
+        # Topic 1 is the General topic, which is effectively the default destination 
+        # when no topic is specified. Treating it as None allows native forwarding.
+        actual_target_topic = None if target_topic == 1 else target_topic
+
+        if self.remove_forward_signature or actual_target_topic is not None:
             # Build reply_to for forum topic targeting
-            reply_to = target_topic if target_topic is not None else None
+            reply_to = actual_target_topic if actual_target_topic is not None else None
 
             # Send as new message (required for topic placement or clean copy)
             await self.client.send_message(
